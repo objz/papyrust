@@ -1,7 +1,10 @@
+use std::path::Path;
+
 use iced::{
-    widget::{column, container, scrollable, text, Column, Row},
+    widget::{column, container, image, scrollable, text, Column, Row},
     Element, Length,
 };
+use iced_video_player::{Video, VideoPlayer};
 
 use crate::{
     library::{loader::discover_projects, project::Project},
@@ -69,16 +72,20 @@ fn render_item(project: &Project) -> Element<Message> {
         "Type: Unknown".to_string()
     };
 
+    let preview = create_preview(project);
+
     container(
         column![
-            text(title).size(16),
-            text(file_type).size(10),
-            text(format!(
-                "Path: {}/{}",
-                project.path,
-                project.meta.preview.as_deref().unwrap_or("no_preview")
-            ))
-            .size(8),
+            preview,
+            text(title)
+                .size(16)
+                // text(file_type).size(10),
+                // text(format!(
+                // "Path: {}/{}",
+                // project.path,
+                // project.meta.preview.as_deref().unwrap_or("no_preview")
+                // ))
+                .size(8),
         ]
         .spacing(5)
         .padding(10),
@@ -86,4 +93,49 @@ fn render_item(project: &Project) -> Element<Message> {
     .width(Length::FillPortion(1))
     .height(Length::Fixed(150.0))
     .into()
+}
+
+fn create_preview(project: &Project) -> Element<Message> {
+    if let Some(preview_name) = &project.meta.preview {
+        let preview_path = format!("{}/{}", project.path, preview_name);
+        let path = Path::new(&preview_path);
+
+        if path.exists() {
+            match path.extension().and_then(|ext| ext.to_str()) {
+                Some("jpg") | Some("jpeg") | Some("png") => image(preview_path)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(100.0))
+                    .into(),
+                Some("gif") => {
+                    if let Ok(url) = url::Url::from_file_path(&preview_path) {
+                        if let Ok(video) = Video::new(&url) {
+                            return VideoPlayer::new(&video)
+                                .width(Length::Fill)
+                                .height(Length::Fixed(100.0))
+                                .content_fit(iced::ContentFit::Contain)
+                                .into();
+                        }
+                    }
+                    container(text("Preview unavailable"))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(100.0))
+                        .into()
+                }
+                _ => container(text("Unsupported preview"))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(100.0))
+                    .into(),
+            }
+        } else {
+            container(text("No preview"))
+                .width(Length::Fill)
+                .height(Length::Fixed(100.0))
+                .into()
+        }
+    } else {
+        container(text("No preview"))
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .into()
+    }
 }
