@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use iced::{
@@ -13,19 +14,41 @@ use crate::{
 
 pub struct Library {
     projects: Vec<Project>,
+    videos: HashMap<String, Video>,
 }
 
 impl Library {
     pub fn new() -> Self {
         let projects = discover_projects();
-        Self { projects }
+        let mut videos = HashMap::new();
+
+        for project in &projects {
+            if let Some(preview_name) = &project.meta.preview {
+                let preview_path = format!("{}/{}", project.path, preview_name);
+                let path = Path::new(&preview_path);
+
+                if path.exists() {
+                    if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
+                        if ext == "gif" {
+                            if let Ok(url) = url::Url::from_file_path(&preview_path) {
+                                if let Ok(video) = Video::new(&url) {
+                                    videos.insert(preview_path.clone(), video);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self { projects, videos }
     }
 }
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let library = &app.library;
 
-    let grid = create_grid(&library.projects);
+    let grid = create_grid(&library.projects, &library.videos);
 
     container(scrollable(column!(text("Library").size(30), grid)))
         .padding(20)
@@ -34,7 +57,10 @@ pub fn build(app: &Papyrust) -> Element<Message> {
         .into()
 }
 
-fn create_grid(projects: &[Project]) -> Element<Message> {
+fn create_grid<'a>(
+    projects: &'a [Project],
+    videos: &'a HashMap<String, Video>,
+) -> Element<'a, Message> {
     const ITEMS_PER_ROW: usize = 3;
 
     let mut rows = Vec::new();
@@ -43,7 +69,7 @@ fn create_grid(projects: &[Project]) -> Element<Message> {
         let mut row_items = Vec::new();
 
         for project in chunk {
-            row_items.push(render_item(project));
+            row_items.push(render_item(project, videos));
         }
 
         while row_items.len() < ITEMS_PER_ROW {
@@ -63,39 +89,34 @@ fn create_grid(projects: &[Project]) -> Element<Message> {
         .into()
 }
 
-fn render_item(project: &Project) -> Element<Message> {
+fn render_item<'a>(
+    project: &'a Project,
+    videos: &'a HashMap<String, Video>,
+) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");
 
-    let file_type = if let Some(file_type) = &project.meta.file_type {
+    let _file_type = if let Some(file_type) = &project.meta.file_type {
         format!("Type: {:?}", file_type)
     } else {
         "Type: Unknown".to_string()
     };
 
-    let preview = create_preview(project);
+    let preview = create_preview(project, videos);
 
     container(
-        column![
-            preview,
-            text(title)
-                .size(16)
-                // text(file_type).size(10),
-                // text(format!(
-                // "Path: {}/{}",
-                // project.path,
-                // project.meta.preview.as_deref().unwrap_or("no_preview")
-                // ))
-                .size(8),
-        ]
-        .spacing(5)
-        .padding(10),
+        column![preview, text(title).size(16).size(8),]
+            .spacing(5)
+            .padding(10),
     )
     .width(Length::FillPortion(1))
     .height(Length::Fixed(150.0))
     .into()
 }
 
-fn create_preview(project: &Project) -> Element<Message> {
+fn create_preview<'a>(
+    project: &'a Project,
+    videos: &'a HashMap<String, Video>,
+) -> Element<'a, Message> {
     if let Some(preview_name) = &project.meta.preview {
         let preview_path = format!("{}/{}", project.path, preview_name);
         let path = Path::new(&preview_path);
@@ -107,19 +128,18 @@ fn create_preview(project: &Project) -> Element<Message> {
                     .height(Length::Fixed(100.0))
                     .into(),
                 Some("gif") => {
-                    if let Ok(url) = url::Url::from_file_path(&preview_path) {
-                        if let Ok(video) = Video::new(&url) {
-                            return VideoPlayer::new(&video)
-                                .width(Length::Fill)
-                                .height(Length::Fixed(100.0))
-                                .content_fit(iced::ContentFit::Contain)
-                                .into();
-                        }
+                    if let Some(video) = videos.get(&preview_path) {
+                        VideoPlayer::new(video)
+                            .width(Length::Fill)
+                            .height(Length::Fixed(100.0))
+                            .content_fit(iced::ContentFit::Contain)
+                            .into()
+                    } else {
+                        container(text("Video unavailable"))
+                            .width(Length::Fill)
+                            .height(Length::Fixed(100.0))
+                            .into()
                     }
-                    container(text("Preview unavailable"))
-                        .width(Length::Fill)
-                        .height(Length::Fixed(100.0))
-                        .into()
                 }
                 _ => container(text("Unsupported preview"))
                     .width(Length::Fill)
