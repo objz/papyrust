@@ -22,7 +22,12 @@ pub fn build(app: &Papyrust) -> Element<Message> {
     let panel = Container::new(panel::build(app))
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(Padding::from([0, 0, 20, 0]))
+        .padding(Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
         .align_x(Horizontal::Center)
         .align_y(Vertical::Bottom);
 

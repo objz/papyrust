@@ -20,7 +20,7 @@ pub fn build(_app: &crate::Papyrust) -> Element<Message> {
         .push(library)
         .push(discover)
         .spacing(15)
-        .align_items(Alignment::Center);
+        .align_y(Alignment::Center);
 
     Container::new(content)
         .padding(Padding::from([10, 20]))

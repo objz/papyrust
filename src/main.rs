@@ -1,4 +1,4 @@
-use iced::{Application, Command, Element, Settings};
+use iced::{Element, Task};
 use ui::{
     library::Library,
     state::{self, Page},
@@ -19,43 +19,29 @@ pub enum Message {
     Error(String),
 }
 
-impl Application for Papyrust {
-    type Message = Message;
-
-    type Flags = ();
-
-    type Theme = iced::theme::Theme;
-
-    type Executor = iced::executor::Default;
-
-    fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
+impl Papyrust {
+    fn new() -> (Self, Task<Message>) {
         (
             Papyrust {
                 current_page: Page::default(),
                 library: Library::new(),
             },
-            Command::none(),
+            Task::none(),
         )
     }
 
-    fn title(&self) -> String {
-        String::from("Papyrust")
-    }
-
-    fn theme(&self) -> Self::Theme {
-        iced::theme::Theme::GruvboxDark
-    }
-
-    fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         state::update(self, message);
-        Command::none()
+        Task::none()
     }
 
-    fn view(&self) -> Element<Self::Message> {
+    fn view(&self) -> Element<Message> {
         view::build(self)
     }
 }
 
 fn main() -> iced::Result {
-    Papyrust::run(Settings::default())
+    iced::application("Papyrust", Papyrust::update, Papyrust::view)
+        .theme(|_| iced::theme::Theme::GruvboxDark)
+        .run_with(Papyrust::new)
 }
