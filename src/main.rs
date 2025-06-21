@@ -4,6 +4,7 @@ use ui::{
     view,
 };
 
+mod library;
 mod ui;
 
 pub struct Papyrust {
@@ -13,6 +14,7 @@ pub struct Papyrust {
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchPage(Page),
+    Error(String),
 }
 
 impl Application for Papyrust {

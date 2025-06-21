@@ -17,5 +17,8 @@ pub fn update(app: &mut Papyrust, message: Message) {
         Message::SwitchPage(page) => {
             app.current_page = page;
         }
+        Message::Error(err) => {
+            eprintln!("Error: {}", err);
+        }
     }
 }
