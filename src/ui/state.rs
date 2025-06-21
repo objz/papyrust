@@ -12,8 +12,10 @@ impl Default for Page {
     }
 }
 
-pub fn update(_app: &mut Papyrust, message: Message) -> Papyrust {
+pub fn update(app: &mut Papyrust, message: Message) {
     match message {
-        Message::SwitchPage(page) => self::Papyrust { current_page: page },
+        Message::SwitchPage(page) => {
+            app.current_page = page;
+        }
     }
 }
