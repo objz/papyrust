@@ -1,5 +1,6 @@
 use iced::{Application, Command, Element, Settings};
 use ui::{
+    library::Library,
     state::{self, Page},
     view,
 };
@@ -9,6 +10,7 @@ mod ui;
 
 pub struct Papyrust {
     pub current_page: Page,
+    pub library: Library,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,7 @@ impl Application for Papyrust {
         (
             Papyrust {
                 current_page: Page::default(),
+                library: Library::new(),
             },
             Command::none(),
         )

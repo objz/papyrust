@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use super::project::Project;
+use super::project::{Project, ProjectMeta};
 
 const WALLPAPER_ENGINE_ID: &str = "431960";
 
@@ -33,7 +33,8 @@ pub fn discover_projects() -> Vec<Project> {
                     let project_json = path.join("project.json");
 
                     if project_json.exists() {
-                        match parse(&project_json) {
+                        match parse(&project_json, &path) {
+                            // Pass the directory path
                             Ok(project) => projects.push(project),
                             Err(e) => eprintln!("Failed to parse project at {:?}: {}", path, e),
                         }
@@ -46,12 +47,15 @@ pub fn discover_projects() -> Vec<Project> {
     projects
 }
 
-fn parse(path: &PathBuf) -> Result<Project, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read file {}: {}", path.display(), e))?;
+fn parse(json_path: &PathBuf, project_dir: &PathBuf) -> Result<Project, String> {
+    let content = fs::read_to_string(json_path)
+        .map_err(|e| format!("Failed to read file {}: {}", json_path.display(), e))?;
 
-    let project: Project = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse JSON from {}: {}", path.display(), e))?;
+    let project_metadata: ProjectMeta = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse JSON from {}: {}", json_path.display(), e))?;
 
-    Ok(project)
+    Ok(Project {
+        meta: project_metadata,
+        path: project_dir.to_string_lossy().to_string(),
+    })
 }
