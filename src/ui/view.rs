@@ -1,7 +1,14 @@
-use iced::Element;
+use iced::{widget::Column, Element};
 
 use crate::{Message, Papyrust};
 
-pub fn build(_app: &Papyrust) -> Element<Message> {
-    iced::widget::text("Papyrust").into()
+use super::{discover, library, panel, state};
+
+pub fn build(app: &Papyrust) -> Element<Message> {
+    let content = match app.current_page {
+        state::Page::Discover => discover::build(app),
+        state::Page::Library => library::build(app),
+    };
+
+    Column::new().push(content).push(panel::build(app)).into()
 }

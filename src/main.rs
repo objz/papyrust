@@ -1,12 +1,19 @@
 use iced::{Application, Command, Element, Settings};
-use ui::view;
+use ui::{
+    state::{self, Page},
+    view,
+};
 
 mod ui;
 
-pub struct Papyrust {}
+pub struct Papyrust {
+    pub current_page: Page,
+}
 
 #[derive(Debug, Clone)]
-pub enum Message {}
+pub enum Message {
+    SwitchPage(Page),
+}
 
 impl Application for Papyrust {
     type Message = Message;
@@ -18,7 +25,12 @@ impl Application for Papyrust {
     type Executor = iced::executor::Default;
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        (Papyrust {}, Command::none())
+        (
+            Papyrust {
+                current_page: Page::default(),
+            },
+            Command::none(),
+        )
     }
 
     fn title(&self) -> String {
@@ -29,7 +41,8 @@ impl Application for Papyrust {
         iced::theme::Theme::GruvboxDark
     }
 
-    fn update(&mut self, _message: Self::Message) -> Command<Self::Message> {
+    fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
+        state::update(self, message);
         Command::none()
     }
 
