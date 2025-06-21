@@ -1,5 +1,7 @@
-use iced::widget::text;
 use iced::{Application, Command, Element, Settings};
+use ui::view;
+
+mod ui;
 
 pub struct Papyrust {}
 
@@ -32,7 +34,7 @@ impl Application for Papyrust {
     }
 
     fn view(&self) -> Element<Self::Message> {
-        text("Papyrust").into()
+        view::build(self)
     }
 }
 
