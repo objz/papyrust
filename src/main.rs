@@ -16,7 +16,7 @@ pub struct Papyrust {
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchPage(Page),
-    Error(String),
+    // Error(String),
 }
 
 impl Papyrust {
