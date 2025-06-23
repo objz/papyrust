@@ -3,7 +3,6 @@ use std::{fs, path::PathBuf};
 use super::project::{Project, ProjectMeta};
 
 const WALLPAPER_ENGINE_ID: &str = "431960";
-
 const WORKSHOP_PATHS: [&str; 4] = [
     "~/.steam/steam/steamapps/workshop",
     "~/.local/share/Steam/steamapps/workshop",
@@ -22,40 +21,57 @@ fn resolve_paths() -> Vec<PathBuf> {
         .collect()
 }
 
-pub fn discover_projects() -> Vec<Project> {
-    let mut projects = Vec::new();
+pub struct Loader {
+    project_paths: Vec<PathBuf>,
+    current: usize,
+}
 
-    for base_dir in resolve_paths() {
-        if let Ok(entries) = fs::read_dir(base_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let project_json = path.join("project.json");
+impl Loader {
+    pub fn new() -> Self {
+        let mut paths = Vec::new();
 
-                    if project_json.exists() {
-                        match parse(&project_json, &path) {
-                            // Pass the directory path
-                            Ok(project) => projects.push(project),
-                            Err(e) => eprintln!("Failed to parse project at {:?}: {}", path, e),
-                        }
+        for base in resolve_paths() {
+            if let Ok(entries) = fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    if dir.is_dir() && dir.join("project.json").exists() {
+                        paths.push(dir);
                     }
                 }
             }
         }
+
+        Loader {
+            project_paths: paths,
+            current: 0,
+        }
     }
 
-    projects
+    pub fn next(&mut self) -> Option<Result<Project, String>> {
+        if self.current >= self.project_paths.len() {
+            None
+        } else {
+            let dir = self.project_paths[self.current].clone();
+            self.current += 1;
+            let path = dir.join("project.json");
+            Some(parse(&path, &dir))
+        }
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.project_paths.len().saturating_sub(self.current)
+    }
 }
 
-fn parse(json_path: &PathBuf, project_dir: &PathBuf) -> Result<Project, String> {
-    let content = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read file {}: {}", json_path.display(), e))?;
+fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-    let project_metadata: ProjectMeta = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse JSON from {}: {}", json_path.display(), e))?;
+    let meta: ProjectMeta = serde_json::from_str(&content)
+        .map_err(|e| format!("JSON parse error in {}: {}", path.display(), e))?;
 
     Ok(Project {
-        meta: project_metadata,
-        path: project_dir.to_string_lossy().to_string(),
+        meta,
+        path: dir.to_string_lossy().to_string(),
     })
 }
