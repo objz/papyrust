@@ -189,124 +189,6 @@ pub mod state;
 pub mod view;
 </file>
 
-<file path="src/ui/state.rs">
-use crate::{Message, Papyrust};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Discover,
-    Library,
-}
-
-impl Default for Page {
-    fn default() -> Self {
-        Page::Library
-    }
-}
-
-pub fn update(app: &mut Papyrust, message: Message) {
-    match message {
-        Message::SwitchPage(page) => {
-            app.current_page = page;
-        }
-        Message::Error(err) => {
-            eprintln!("Error: {}", err);
-        }
-        _ => {}
-    }
-}
-</file>
-
-<file path="src/ui/library.rs">
-use iced::widget::image::Handle;
-use iced::{
-    widget::{column, container, image, scrollable, text, Column, Row},
-    Element, Length,
-};
-use iced_video_player::{Video, VideoPlayer};
-use std::{collections::HashMap, path::Path};
-
-use crate::library::project::Project;
-use crate::Message;
-
-pub fn build<'a>(
-    projects: &'a [Project],
-    videos: &'a HashMap<String, Video>,
-) -> Element<'a, Message> {
-    const ITEMS_PER_ROW: usize = 3;
-    let mut rows = Vec::new();
-
-    for chunk in projects.chunks(ITEMS_PER_ROW) {
-        let mut row_items = Vec::new();
-
-        for project in chunk {
-            let title = project.meta.title.as_deref().unwrap_or("Untitled");
-            let preview = {
-                if let Some(name) = &project.meta.preview {
-                    let full = format!("{}/{}", project.path, name);
-                    let p = Path::new(&full);
-                    match p.extension().and_then(|e| e.to_str()) {
-                        Some("jpg") | Some("jpeg") | Some("png") => {
-                            let handle = Handle::from_path(full.clone());
-                            image(handle)
-                                .width(Length::Fill)
-                                .height(Length::Fixed(100.0))
-                                .into()
-                        }
-                        Some("gif") if videos.contains_key(&full) => {
-                            VideoPlayer::new(&videos[&full])
-                                .width(Length::Fill)
-                                .height(Length::Fixed(100.0))
-                                .content_fit(iced::ContentFit::Contain)
-                                .into()
-                        }
-                        Some("gif") => container(text("Video unavailable"))
-                            .width(Length::Fill)
-                            .height(Length::Fixed(100.0))
-                            .into(),
-                        _ => container(text("No preview"))
-                            .width(Length::Fill)
-                            .height(Length::Fixed(100.0))
-                            .into(),
-                    }
-                } else {
-                    container(text("No preview"))
-                        .width(Length::Fill)
-                        .height(Length::Fixed(100.0))
-                        .into()
-                }
-            };
-
-            row_items.push(
-                container(column![preview, text(title).size(16)])
-                    .width(Length::FillPortion(1))
-                    .height(Length::Fixed(150.0))
-                    .into(),
-            );
-        }
-
-        while row_items.len() < ITEMS_PER_ROW {
-            row_items.push(container(text("")).width(Length::FillPortion(1)).into());
-        }
-
-        rows.push(
-            Row::with_children(row_items)
-                .spacing(15)
-                .width(Length::Fill)
-                .into(),
-        );
-    }
-
-    let grid = Column::with_children(rows).spacing(15).width(Length::Fill);
-
-    container(scrollable(column![text("Library").size(30), grid]))
-        .padding(20)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-</file>
-
 <file path="src/ui/panel.rs">
 use iced::{
     widget::{text, Button, Container, Row},
@@ -339,45 +221,189 @@ pub fn build(_app: &crate::Papyrust) -> Element<Message> {
 </file>
 
 <file path="src/ui/view.rs">
-use iced::Padding;
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{text, Column, Container},
-    Element, Length,
+    widget::{Column, Container},
+    Element, Length, Padding,
 };
 
-use super::{discover, library, panel, state::Page};
 use crate::{Message, Papyrust};
 
+use super::{discover, library, panel, state};
+
 pub fn build(app: &Papyrust) -> Element<Message> {
-    // If we’re still scanning the workshop, show a spinner/text instead of the grid:
     let content = match app.current_page {
-        Page::Discover => discover::build(app),
-        Page::Library => {
-            if app.loading {
-                Container::new(text("Loading…").size(30))
-                    .align_x(Horizontal::Center)
-                    .align_y(Vertical::Center)
-                    .into()
-            } else {
-                library::build(&app.projects, &app.videos)
-            }
-        }
+        state::Page::Discover => discover::build(app),
+        state::Page::Library => library::build(app),
     };
 
-    let main = Column::new()
+    let main_content = Column::new()
         .push(content)
         .width(Length::Fill)
         .height(Length::Fill);
 
-    let nav = Container::new(panel::build(app))
+    let panel = Container::new(panel::build(app))
         .width(Length::Fill)
-        .height(Length::Fixed(80.0))
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
         .align_x(Horizontal::Center)
-        .align_y(Vertical::Bottom)
-        .padding(Padding::from([0, 20]));
+        .align_y(Vertical::Bottom);
 
-    Column::new().push(main).push(nav).into()
+    Column::new()
+        .push(main_content)
+        .push(
+            Container::new(panel)
+                .width(Length::Fill)
+                .height(Length::Fixed(80.0)),
+        )
+        .into()
+}
+</file>
+
+<file path="src/ui/library.rs">
+use iced::widget::image::Handle;
+use iced::{
+    alignment::{Horizontal, Vertical},
+    widget::{column, container, image, scrollable, text, Column, Row},
+    Element, Length,
+};
+
+use crate::{
+    library::{loader::discover_projects, project::Project},
+    Message, Papyrust,
+};
+
+pub struct Library {
+    pub projects: Vec<Project>,
+    pub preview_handles: Vec<Option<Handle>>,
+}
+
+impl Library {
+    pub fn new() -> Self {
+        let projects = discover_projects();
+        let preview_handles = vec![None; projects.len()];
+        Self {
+            projects,
+            preview_handles,
+        }
+    }
+}
+
+pub fn build(app: &Papyrust) -> Element<Message> {
+    let lib = &app.library;
+    let grid = create_grid(&lib.projects, &lib.preview_handles);
+
+    container(scrollable(column!(text("Library").size(30), grid)))
+        .padding(20)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn create_grid<'a>(
+    projects: &'a [Project],
+    preview_handles: &'a [Option<Handle>],
+) -> Element<'a, Message> {
+    const ITEMS_PER_ROW: usize = 3;
+    let mut rows = Vec::new();
+    let mut idx = 0;
+
+    for chunk in projects.chunks(ITEMS_PER_ROW) {
+        let mut cells = Vec::new();
+        for project in chunk {
+            let handle = preview_handles.get(idx).and_then(|h| h.clone());
+            cells.push(render_item(project, handle));
+            idx += 1;
+        }
+        // pad out last row
+        while cells.len() < ITEMS_PER_ROW {
+            cells.push(container(text("")).width(Length::FillPortion(1)).into());
+        }
+        rows.push(
+            Row::with_children(cells)
+                .spacing(15)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+
+    Column::with_children(rows)
+        .spacing(15)
+        .width(Length::Fill)
+        .into()
+}
+
+fn render_item<'a>(project: &'a Project, preview_handle: Option<Handle>) -> Element<'a, Message> {
+    let title = project.meta.title.as_deref().unwrap_or("Untitled");
+    let preview = create_preview(preview_handle, project);
+
+    container(
+        column![preview, text(title).size(16)]
+            .spacing(5)
+            .padding(10),
+    )
+    .width(Length::FillPortion(1))
+    .height(Length::Fixed(150.0))
+    .into()
+}
+
+fn create_preview<'a>(
+    preview_handle: Option<Handle>,
+    project: &'a Project,
+) -> Element<'a, Message> {
+    if let Some(handle) = preview_handle {
+        image(handle)
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .into()
+    } else if project.meta.preview.is_some() {
+        container(text("Loading..."))
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+    } else {
+        container(text("No preview"))
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+    }
+}
+</file>
+
+<file path="src/ui/state.rs">
+use crate::{Message, Papyrust};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Discover,
+    Library,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Page::Library
+    }
+}
+
+pub fn update(app: &mut Papyrust, message: Message) {
+    match message {
+        Message::SwitchPage(page) => {
+            app.current_page = page;
+        }
+        // Message::Error(err) => {
+        // eprintln!("Error: {}", err);
+        // }
+        _ => {}
+    }
 }
 </file>
 
@@ -394,54 +420,62 @@ iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 shellexpand = "3.1.1"
+tokio = "1.45.1"
 url = "2.5.4"
 </file>
 
 <file path="src/main.rs">
-use std::{collections::HashMap, path::Path, thread};
-
+use iced::widget::image::Handle;
 use iced::{Element, Task};
-use iced_video_player::Video;
-use library::{loader::discover_projects, project::Project};
-use ui::{
-    state::{self, Page},
-    view,
-};
+use std::fs;
 
 mod library;
 mod ui;
 
+use ui::{library::Library, state::Page, view};
+
 pub struct Papyrust {
     pub current_page: Page,
-    pub projects: Vec<Project>,
-    pub videos: HashMap<String, Video>,
-    pub loading: bool,
+    pub library: Library,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchPage(Page),
-    ProjectsLoaded(Vec<Project>),
-    Error(String),
+    /// (project_index, optional_bytes)
+    PreviewLoaded(usize, Option<Vec<u8>>),
 }
 
 impl Papyrust {
     fn new() -> (Self, Task<Message>) {
-        let init = Papyrust {
-            current_page: Page::default(),
-            projects: Vec::new(),
-            videos: HashMap::new(),
-            loading: true,
-        };
+        let library = Library::new();
 
-        let task = Task::future(async {
-            std::thread::spawn(discover_projects)
-                .join()
-                .unwrap_or_default()
-        })
-        .map(Message::ProjectsLoaded);
+        // Spawn a Task for each preview file
+        let tasks: Vec<_> = library
+            .projects
+            .iter()
+            .enumerate()
+            .filter_map(|(i, project)| {
+                project.meta.preview.as_ref().map(|preview_name| {
+                    let preview_path = format!("{}/{}", project.path, preview_name);
+                    Task::perform(
+                        async move {
+                            let data = fs::read(preview_path).ok();
+                            (i, data)
+                        },
+                        |(idx, data)| Message::PreviewLoaded(idx, data),
+                    )
+                })
+            })
+            .collect();
 
-        (init, task)
+        (
+            Papyrust {
+                current_page: Page::default(),
+                library,
+            },
+            Task::batch(tasks),
+        )
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -450,29 +484,14 @@ impl Papyrust {
                 self.current_page = page;
                 Task::none()
             }
-            Message::ProjectsLoaded(projects) => {
-                let mut videos = HashMap::new();
-                for proj in &projects {
-                    if let Some(preview) = &proj.meta.preview {
-                        let full = format!("{}/{}", proj.path, preview);
-                        let p = Path::new(&full);
-                        if p.exists() && p.extension().and_then(|e| e.to_str()) == Some("gif") {
-                            if let Ok(url) = url::Url::from_file_path(&full) {
-                                if let Ok(video) = Video::new(&url) {
-                                    videos.insert(full.clone(), video);
-                                }
-                            }
-                        }
+            Message::PreviewLoaded(index, maybe_bytes) => {
+                if let Some(bytes) = maybe_bytes {
+                    // Vec<u8> already implements Into<Bytes>, so just pass it directly:
+                    let handle = Handle::from_bytes(bytes);
+                    if index < self.library.preview_handles.len() {
+                        self.library.preview_handles[index] = Some(handle);
                     }
                 }
-
-                self.projects = projects;
-                self.videos = videos;
-                self.loading = false;
-                Task::none()
-            }
-            Message::Error(err) => {
-                eprintln!("Error: {}", err);
                 Task::none()
             }
         }

@@ -1,6 +1,6 @@
-use std::path::Path;
-
+use iced::widget::image::Handle;
 use iced::{
+    alignment::{Horizontal, Vertical},
     widget::{column, container, image, scrollable, text, Column, Row},
     Element, Length,
 };
@@ -11,21 +11,24 @@ use crate::{
 };
 
 pub struct Library {
-    projects: Vec<Project>,
+    pub projects: Vec<Project>,
+    pub preview_handles: Vec<Option<Handle>>,
 }
 
 impl Library {
     pub fn new() -> Self {
         let projects = discover_projects();
-
-        Self { projects }
+        let preview_handles = vec![None; projects.len()];
+        Self {
+            projects,
+            preview_handles,
+        }
     }
 }
 
 pub fn build(app: &Papyrust) -> Element<Message> {
-    let library = &app.library;
-
-    let grid = create_grid(&library.projects);
+    let lib = &app.library;
+    let grid = create_grid(&lib.projects, &lib.preview_handles);
 
     container(scrollable(column!(text("Library").size(30), grid)))
         .padding(20)
@@ -34,27 +37,31 @@ pub fn build(app: &Papyrust) -> Element<Message> {
         .into()
 }
 
-fn create_grid<'a>(projects: &'a [Project]) -> Element<'a, Message> {
+fn create_grid<'a>(
+    projects: &'a [Project],
+    preview_handles: &'a [Option<Handle>],
+) -> Element<'a, Message> {
     const ITEMS_PER_ROW: usize = 3;
-
     let mut rows = Vec::new();
+    let mut idx = 0;
 
     for chunk in projects.chunks(ITEMS_PER_ROW) {
-        let mut row_items = Vec::new();
-
+        let mut cells = Vec::new();
         for project in chunk {
-            row_items.push(render_item(project));
+            let handle = preview_handles.get(idx).and_then(|h| h.clone());
+            cells.push(render_item(project, handle));
+            idx += 1;
         }
-
-        while row_items.len() < ITEMS_PER_ROW {
-            row_items.push(container(text("")).width(Length::FillPortion(1)).into());
+        // pad out last row
+        while cells.len() < ITEMS_PER_ROW {
+            cells.push(container(text("")).width(Length::FillPortion(1)).into());
         }
-
-        let project_row = Row::with_children(row_items)
-            .spacing(15)
-            .width(Length::Fill);
-
-        rows.push(project_row.into());
+        rows.push(
+            Row::with_children(cells)
+                .spacing(15)
+                .width(Length::Fill)
+                .into(),
+        );
     }
 
     Column::with_children(rows)
@@ -63,19 +70,12 @@ fn create_grid<'a>(projects: &'a [Project]) -> Element<'a, Message> {
         .into()
 }
 
-fn render_item<'a>(project: &'a Project) -> Element<'a, Message> {
+fn render_item<'a>(project: &'a Project, preview_handle: Option<Handle>) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");
-
-    let _file_type = if let Some(file_type) = &project.meta.file_type {
-        format!("Type: {:?}", file_type)
-    } else {
-        "Type: Unknown".to_string()
-    };
-
-    let preview = create_preview(project);
+    let preview = create_preview(preview_handle, project);
 
     container(
-        column![preview, text(title).size(16).size(8),]
+        column![preview, text(title).size(16)]
             .spacing(5)
             .padding(10),
     )
@@ -84,33 +84,28 @@ fn render_item<'a>(project: &'a Project) -> Element<'a, Message> {
     .into()
 }
 
-fn create_preview<'a>(project: &'a Project) -> Element<'a, Message> {
-    if let Some(preview_name) = &project.meta.preview {
-        let preview_path = format!("{}/{}", project.path, preview_name);
-        let path = Path::new(&preview_path);
-
-        if path.exists() {
-            match path.extension().and_then(|ext| ext.to_str()) {
-                Some("jpg") | Some("jpeg") | Some("png") | Some("gif") => image(preview_path)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(100.0))
-                    .into(),
-
-                _ => container(text("Unsupported preview"))
-                    .width(Length::Fill)
-                    .height(Length::Fixed(100.0))
-                    .into(),
-            }
-        } else {
-            container(text("No preview"))
-                .width(Length::Fill)
-                .height(Length::Fixed(100.0))
-                .into()
-        }
+fn create_preview<'a>(
+    preview_handle: Option<Handle>,
+    project: &'a Project,
+) -> Element<'a, Message> {
+    if let Some(handle) = preview_handle {
+        image(handle)
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .into()
+    } else if project.meta.preview.is_some() {
+        container(text("Loading..."))
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
     } else {
         container(text("No preview"))
             .width(Length::Fill)
             .height(Length::Fixed(100.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
             .into()
     }
 }
