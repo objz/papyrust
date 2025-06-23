@@ -1,0 +1,493 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+4. Repository files, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+<additional_info>
+
+</additional_info>
+
+</file_summary>
+
+<directory_structure>
+src/
+  library/
+    loader.rs
+    mod.rs
+    project.rs
+  ui/
+    discover.rs
+    library.rs
+    mod.rs
+    panel.rs
+    state.rs
+    view.rs
+  main.rs
+.gitignore
+Cargo.toml
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="src/ui/discover.rs">
+use iced::Element;
+
+use crate::{Message, Papyrust};
+
+pub fn build(_app: &Papyrust) -> Element<Message> {
+    iced::widget::text("Discover").into()
+}
+</file>
+
+<file path=".gitignore">
+/target
+</file>
+
+<file path="src/library/loader.rs">
+use std::{fs, path::PathBuf};
+
+use super::project::{Project, ProjectMeta};
+
+const WALLPAPER_ENGINE_ID: &str = "431960";
+
+const WORKSHOP_PATHS: [&str; 4] = [
+    "~/.steam/steam/steamapps/workshop",
+    "~/.local/share/Steam/steamapps/workshop",
+    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
+    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
+];
+
+fn resolve_paths() -> Vec<PathBuf> {
+    WORKSHOP_PATHS
+        .iter()
+        .map(|p| shellexpand::tilde(p).to_string())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+pub fn discover_projects() -> Vec<Project> {
+    let mut projects = Vec::new();
+
+    for base_dir in resolve_paths() {
+        if let Ok(entries) = fs::read_dir(base_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let project_json = path.join("project.json");
+
+                    if project_json.exists() {
+                        match parse(&project_json, &path) {
+                            // Pass the directory path
+                            Ok(project) => projects.push(project),
+                            Err(e) => eprintln!("Failed to parse project at {:?}: {}", path, e),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    projects
+}
+
+fn parse(json_path: &PathBuf, project_dir: &PathBuf) -> Result<Project, String> {
+    let content = fs::read_to_string(json_path)
+        .map_err(|e| format!("Failed to read file {}: {}", json_path.display(), e))?;
+
+    let project_metadata: ProjectMeta = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse JSON from {}: {}", json_path.display(), e))?;
+
+    Ok(Project {
+        meta: project_metadata,
+        path: project_dir.to_string_lossy().to_string(),
+    })
+}
+</file>
+
+<file path="src/library/mod.rs">
+pub mod loader;
+pub mod project;
+</file>
+
+<file path="src/library/project.rs">
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectType {
+    #[serde(alias = "Web")]
+    Web,
+    #[serde(alias = "Video")]
+    Video,
+    #[serde(alias = "Application")]
+    Application,
+    #[serde(alias = "Scene")]
+    Scene,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ProjectMeta {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    #[serde(rename = "type")]
+    pub file_type: Option<ProjectType>,
+    pub preview: Option<String>,
+    pub file: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Project {
+    pub meta: ProjectMeta,
+    pub path: String,
+}
+</file>
+
+<file path="src/ui/mod.rs">
+pub mod discover;
+pub mod library;
+pub mod panel;
+pub mod state;
+pub mod view;
+</file>
+
+<file path="src/ui/state.rs">
+use crate::{Message, Papyrust};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Discover,
+    Library,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Page::Library
+    }
+}
+
+pub fn update(app: &mut Papyrust, message: Message) {
+    match message {
+        Message::SwitchPage(page) => {
+            app.current_page = page;
+        }
+        Message::Error(err) => {
+            eprintln!("Error: {}", err);
+        }
+        _ => {}
+    }
+}
+</file>
+
+<file path="src/ui/library.rs">
+use iced::widget::image::Handle;
+use iced::{
+    widget::{column, container, image, scrollable, text, Column, Row},
+    Element, Length,
+};
+use iced_video_player::{Video, VideoPlayer};
+use std::{collections::HashMap, path::Path};
+
+use crate::library::project::Project;
+use crate::Message;
+
+pub fn build<'a>(
+    projects: &'a [Project],
+    videos: &'a HashMap<String, Video>,
+) -> Element<'a, Message> {
+    const ITEMS_PER_ROW: usize = 3;
+    let mut rows = Vec::new();
+
+    for chunk in projects.chunks(ITEMS_PER_ROW) {
+        let mut row_items = Vec::new();
+
+        for project in chunk {
+            let title = project.meta.title.as_deref().unwrap_or("Untitled");
+            let preview = {
+                if let Some(name) = &project.meta.preview {
+                    let full = format!("{}/{}", project.path, name);
+                    let p = Path::new(&full);
+                    match p.extension().and_then(|e| e.to_str()) {
+                        Some("jpg") | Some("jpeg") | Some("png") => {
+                            let handle = Handle::from_path(full.clone());
+                            image(handle)
+                                .width(Length::Fill)
+                                .height(Length::Fixed(100.0))
+                                .into()
+                        }
+                        Some("gif") if videos.contains_key(&full) => {
+                            VideoPlayer::new(&videos[&full])
+                                .width(Length::Fill)
+                                .height(Length::Fixed(100.0))
+                                .content_fit(iced::ContentFit::Contain)
+                                .into()
+                        }
+                        Some("gif") => container(text("Video unavailable"))
+                            .width(Length::Fill)
+                            .height(Length::Fixed(100.0))
+                            .into(),
+                        _ => container(text("No preview"))
+                            .width(Length::Fill)
+                            .height(Length::Fixed(100.0))
+                            .into(),
+                    }
+                } else {
+                    container(text("No preview"))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(100.0))
+                        .into()
+                }
+            };
+
+            row_items.push(
+                container(column![preview, text(title).size(16)])
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fixed(150.0))
+                    .into(),
+            );
+        }
+
+        while row_items.len() < ITEMS_PER_ROW {
+            row_items.push(container(text("")).width(Length::FillPortion(1)).into());
+        }
+
+        rows.push(
+            Row::with_children(row_items)
+                .spacing(15)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+
+    let grid = Column::with_children(rows).spacing(15).width(Length::Fill);
+
+    container(scrollable(column![text("Library").size(30), grid]))
+        .padding(20)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+</file>
+
+<file path="src/ui/panel.rs">
+use iced::{
+    widget::{text, Button, Container, Row},
+    Alignment, Element, Padding,
+};
+
+use crate::Message;
+
+use super::state::Page;
+
+pub fn build(_app: &crate::Papyrust) -> Element<Message> {
+    let library = Button::new(text("Library"))
+        .on_press(Message::SwitchPage(Page::Library))
+        .padding(Padding::from([8, 16]));
+
+    let discover = Button::new(text("Discover"))
+        .on_press(Message::SwitchPage(Page::Discover))
+        .padding(Padding::from([8, 16]));
+
+    let content = Row::new()
+        .push(library)
+        .push(discover)
+        .spacing(15)
+        .align_y(Alignment::Center);
+
+    Container::new(content)
+        .padding(Padding::from([10, 20]))
+        .into()
+}
+</file>
+
+<file path="src/ui/view.rs">
+use iced::Padding;
+use iced::{
+    alignment::{Horizontal, Vertical},
+    widget::{text, Column, Container},
+    Element, Length,
+};
+
+use super::{discover, library, panel, state::Page};
+use crate::{Message, Papyrust};
+
+pub fn build(app: &Papyrust) -> Element<Message> {
+    // If we’re still scanning the workshop, show a spinner/text instead of the grid:
+    let content = match app.current_page {
+        Page::Discover => discover::build(app),
+        Page::Library => {
+            if app.loading {
+                Container::new(text("Loading…").size(30))
+                    .align_x(Horizontal::Center)
+                    .align_y(Vertical::Center)
+                    .into()
+            } else {
+                library::build(&app.projects, &app.videos)
+            }
+        }
+    };
+
+    let main = Column::new()
+        .push(content)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    let nav = Container::new(panel::build(app))
+        .width(Length::Fill)
+        .height(Length::Fixed(80.0))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Bottom)
+        .padding(Padding::from([0, 20]));
+
+    Column::new().push(main).push(nav).into()
+}
+</file>
+
+<file path="Cargo.toml">
+[package]
+name = "papyrust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive = "1.0.0"
+iced = { version = "0.13.1", features = ["image"] }
+iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+shellexpand = "3.1.1"
+url = "2.5.4"
+</file>
+
+<file path="src/main.rs">
+use std::{collections::HashMap, path::Path, thread};
+
+use iced::{Element, Task};
+use iced_video_player::Video;
+use library::{loader::discover_projects, project::Project};
+use ui::{
+    state::{self, Page},
+    view,
+};
+
+mod library;
+mod ui;
+
+pub struct Papyrust {
+    pub current_page: Page,
+    pub projects: Vec<Project>,
+    pub videos: HashMap<String, Video>,
+    pub loading: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    SwitchPage(Page),
+    ProjectsLoaded(Vec<Project>),
+    Error(String),
+}
+
+impl Papyrust {
+    fn new() -> (Self, Task<Message>) {
+        let init = Papyrust {
+            current_page: Page::default(),
+            projects: Vec::new(),
+            videos: HashMap::new(),
+            loading: true,
+        };
+
+        let task = Task::future(async {
+            std::thread::spawn(discover_projects)
+                .join()
+                .unwrap_or_default()
+        })
+        .map(Message::ProjectsLoaded);
+
+        (init, task)
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::SwitchPage(page) => {
+                self.current_page = page;
+                Task::none()
+            }
+            Message::ProjectsLoaded(projects) => {
+                let mut videos = HashMap::new();
+                for proj in &projects {
+                    if let Some(preview) = &proj.meta.preview {
+                        let full = format!("{}/{}", proj.path, preview);
+                        let p = Path::new(&full);
+                        if p.exists() && p.extension().and_then(|e| e.to_str()) == Some("gif") {
+                            if let Ok(url) = url::Url::from_file_path(&full) {
+                                if let Ok(video) = Video::new(&url) {
+                                    videos.insert(full.clone(), video);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                self.projects = projects;
+                self.videos = videos;
+                self.loading = false;
+                Task::none()
+            }
+            Message::Error(err) => {
+                eprintln!("Error: {}", err);
+                Task::none()
+            }
+        }
+    }
+
+    fn view(&self) -> Element<Message> {
+        view::build(self)
+    }
+}
+
+fn main() -> iced::Result {
+    iced::application("Papyrust", Papyrust::update, Papyrust::view)
+        .theme(|_| iced::theme::Theme::GruvboxDark)
+        .run_with(Papyrust::new)
+}
+</file>
+
+</files>

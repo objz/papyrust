@@ -20,5 +20,6 @@ pub fn update(app: &mut Papyrust, message: Message) {
         Message::Error(err) => {
             eprintln!("Error: {}", err);
         }
+        _ => {}
     }
 }
