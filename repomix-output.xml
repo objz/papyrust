@@ -78,90 +78,6 @@ pub fn build(_app: &Papyrust) -> Element<Message> {
 /target
 </file>
 
-<file path="src/library/loader.rs">
-use std::{fs, path::PathBuf};
-
-use super::project::{Project, ProjectMeta};
-
-const WALLPAPER_ENGINE_ID: &str = "431960";
-const WORKSHOP_PATHS: [&str; 4] = [
-    "~/.steam/steam/steamapps/workshop",
-    "~/.local/share/Steam/steamapps/workshop",
-    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
-    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
-];
-
-fn resolve_paths() -> Vec<PathBuf> {
-    WORKSHOP_PATHS
-        .iter()
-        .map(|p| shellexpand::tilde(p).to_string())
-        .map(PathBuf::from)
-        .filter(|p| p.exists())
-        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
-        .filter(|p| p.exists())
-        .collect()
-}
-
-/// Lazily yields one parsed `Project` (or error) at a time.
-pub struct Loader {
-    project_paths: Vec<PathBuf>,
-    current: usize,
-}
-
-impl Loader {
-    /// Collects all candidate project dirs but does *not* parse them yet.
-    pub fn new() -> Self {
-        let mut paths = Vec::new();
-
-        for base in resolve_paths() {
-            if let Ok(entries) = fs::read_dir(base) {
-                for entry in entries.flatten() {
-                    let dir = entry.path();
-                    if dir.is_dir() && dir.join("project.json").exists() {
-                        paths.push(dir);
-                    }
-                }
-            }
-        }
-
-        Loader {
-            project_paths: paths,
-            current: 0,
-        }
-    }
-
-    /// Returns the next Project (or parse error), or `None` if exhausted.
-    pub fn next(&mut self) -> Option<Result<Project, String>> {
-        if self.current >= self.project_paths.len() {
-            None
-        } else {
-            let dir = self.project_paths[self.current].clone();
-            self.current += 1;
-            let json_path = dir.join("project.json");
-            Some(parse(&json_path, &dir))
-        }
-    }
-
-    /// How many projects remain to load.
-    pub fn remaining(&self) -> usize {
-        self.project_paths.len().saturating_sub(self.current)
-    }
-}
-
-fn parse(json_path: &PathBuf, project_dir: &PathBuf) -> Result<Project, String> {
-    let content = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read {}: {}", json_path.display(), e))?;
-
-    let meta: ProjectMeta = serde_json::from_str(&content)
-        .map_err(|e| format!("JSON parse error in {}: {}", json_path.display(), e))?;
-
-    Ok(Project {
-        meta,
-        path: project_dir.to_string_lossy().to_string(),
-    })
-}
-</file>
-
 <file path="src/library/mod.rs">
 pub mod loader;
 pub mod project;
@@ -209,6 +125,86 @@ pub mod state;
 pub mod view;
 </file>
 
+<file path="src/library/loader.rs">
+use std::{fs, path::PathBuf};
+
+use super::project::{Project, ProjectMeta};
+
+const WALLPAPER_ENGINE_ID: &str = "431960";
+const WORKSHOP_PATHS: [&str; 4] = [
+    "~/.steam/steam/steamapps/workshop",
+    "~/.local/share/Steam/steamapps/workshop",
+    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
+    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
+];
+
+fn resolve_paths() -> Vec<PathBuf> {
+    WORKSHOP_PATHS
+        .iter()
+        .map(|p| shellexpand::tilde(p).to_string())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+pub struct Loader {
+    project_paths: Vec<PathBuf>,
+    current: usize,
+}
+
+impl Loader {
+    pub fn new() -> Self {
+        let mut paths = Vec::new();
+
+        for base in resolve_paths() {
+            if let Ok(entries) = fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    if dir.is_dir() && dir.join("project.json").exists() {
+                        paths.push(dir);
+                    }
+                }
+            }
+        }
+
+        Loader {
+            project_paths: paths,
+            current: 0,
+        }
+    }
+
+    pub fn next(&mut self) -> Option<Result<Project, String>> {
+        if self.current >= self.project_paths.len() {
+            None
+        } else {
+            let dir = self.project_paths[self.current].clone();
+            self.current += 1;
+            let path = dir.join("project.json");
+            Some(parse(&path, &dir))
+        }
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.project_paths.len().saturating_sub(self.current)
+    }
+}
+
+fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+    let meta: ProjectMeta = serde_json::from_str(&content)
+        .map_err(|e| format!("JSON parse error in {}: {}", path.display(), e))?;
+
+    Ok(Project {
+        meta,
+        path: dir.to_string_lossy().to_string(),
+    })
+}
+</file>
+
 <file path="src/ui/panel.rs">
 use iced::{
     widget::{text, Button, Container, Row},
@@ -241,13 +237,14 @@ pub fn build(_app: &crate::Papyrust) -> Element<Message> {
 </file>
 
 <file path="src/ui/view.rs">
+use iced::widget::container;
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{Column, Container},
+    widget::{image, image::Handle, text, Column, Container, Row},
     Element, Length, Padding,
 };
 
-use crate::{Message, Papyrust};
+use crate::{library::project::Project, Message, Papyrust};
 
 use super::{discover, library, panel, state};
 
@@ -257,7 +254,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
         state::Page::Library => library::build(app),
     };
 
-    let main_content = Column::new()
+    let main = Column::new()
         .push(content)
         .width(Length::Fill)
         .height(Length::Fill);
@@ -275,7 +272,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
         .align_y(Vertical::Bottom);
 
     Column::new()
-        .push(main_content)
+        .push(main)
         .push(
             Container::new(panel)
                 .width(Length::Fill)
@@ -283,9 +280,87 @@ pub fn build(app: &Papyrust) -> Element<Message> {
         )
         .into()
 }
+
+pub fn create_grid<'a>(
+    projects: &'a [Project],
+    preview: &'a [Option<Handle>],
+) -> Element<'a, Message> {
+    const ITEMS_PER_ROW: usize = 3;
+    let mut rows = Vec::new();
+    let mut idx = 0;
+
+    for chunk in projects.chunks(ITEMS_PER_ROW) {
+        let mut cells = Vec::new();
+
+        for project in chunk {
+            let handle = preview.get(idx).and_then(Clone::clone);
+            cells.push(render_item(project, handle));
+            idx += 1;
+        }
+
+        while cells.len() < ITEMS_PER_ROW {
+            cells.push(container(text("")).width(Length::FillPortion(1)).into());
+        }
+
+        rows.push(
+            Row::with_children(cells)
+                .spacing(15)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+
+    Column::with_children(rows)
+        .spacing(15)
+        .width(Length::Fill)
+        .into()
+}
+
+fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a, Message> {
+    let title = project.meta.title.as_deref().unwrap_or("Untitled");
+    let preview = create_preview(preview, project);
+
+    container(
+        Column::new()
+            .push(preview)
+            .push(text(title).size(16))
+            .spacing(5)
+            .padding(10),
+    )
+    .width(Length::FillPortion(1))
+    .height(Length::Fixed(150.0))
+    .into()
+}
+
+fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<'a, Message> {
+    if let Some(handle) = preview {
+        image(handle)
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .into()
+    } else if project.meta.preview.is_some() {
+        container(text("Loading..."))
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+    } else {
+        container(text("No preview"))
+            .width(Length::Fill)
+            .height(Length::Fixed(100.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+    }
+}
 </file>
 
 <file path="src/ui/state.rs">
+use std::fs;
+
+use iced::{widget::image::Handle, Task};
+
 use crate::{Message, Papyrust};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,15 +375,42 @@ impl Default for Page {
     }
 }
 
-pub fn update(app: &mut Papyrust, message: Message) {
+pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
     match message {
         Message::SwitchPage(page) => {
             app.current_page = page;
+            Task::none()
         }
-        // Message::Error(err) => {
-        // eprintln!("Error: {}", err);
-        // }
-        _ => {}
+
+        Message::NextProject => {
+            app.library.load_next();
+            let idx = app.library.projects.len() - 1;
+            let mut tasks = Vec::new();
+
+            if let Some(name) = app.library.projects[idx].meta.preview.as_ref() {
+                let path = format!("{}/{}", app.library.projects[idx].path, name);
+                tasks.push(Task::perform(
+                    async move { (idx, fs::read(path).ok()) },
+                    |(i, data)| Message::PreviewLoaded(i, data),
+                ));
+            }
+
+            if app.library.remaining() {
+                tasks.push(Task::perform(async {}, |_| Message::NextProject));
+            }
+
+            Task::batch(tasks)
+        }
+
+        Message::PreviewLoaded(index, bytes) => {
+            if let Some(bytes) = bytes {
+                let handle = Handle::from_bytes(bytes);
+                if index < app.library.preview.len() {
+                    app.library.preview[index] = Some(handle);
+                }
+            }
+            Task::none()
+        }
     }
 }
 </file>
@@ -326,42 +428,38 @@ use crate::{Message, Papyrust};
 pub struct Library {
     loader: Loader,
     pub projects: Vec<Project>,
-    pub preview_handles: Vec<Option<Handle>>,
+    pub preview: Vec<Option<Handle>>,
 }
 
 impl Library {
-    /// Start with *no* projects; loader has the full list.
     pub fn new() -> Self {
         Self {
             loader: Loader::new(),
             projects: Vec::new(),
-            preview_handles: Vec::new(),
+            preview: Vec::new(),
         }
     }
 
-    /// Attempt to load exactly one more project (if any remain).
     pub fn load_next(&mut self) {
         if let Some(result) = self.loader.next() {
             match result {
                 Ok(project) => {
                     self.projects.push(project);
-                    self.preview_handles.push(None);
+                    self.preview.push(None);
                 }
                 Err(e) => eprintln!("Project parse error: {}", e),
             }
         }
     }
 
-    /// True if there are still more projects to pull from the loader.
-    pub fn has_more(&self) -> bool {
+    pub fn remaining(&self) -> bool {
         self.loader.remaining() > 0
     }
 }
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let lib = &app.library;
-    // reuse your existing grid‐creation logic:
-    let grid = super::view::create_grid(&lib.projects, &lib.preview_handles);
+    let grid = super::view::create_grid(&lib.projects, &lib.preview);
 
     container(scrollable(column![text("Library").size(30), grid]))
         .padding(20)
@@ -389,14 +487,12 @@ url = "2.5.4"
 </file>
 
 <file path="src/main.rs">
-use iced::widget::image::Handle;
 use iced::{Element, Task};
-use std::fs;
+use ui::state;
 
 mod library;
 mod ui;
 
-use library::loader::Loader; // for type only; UI holds the real one
 use ui::library::Library;
 use ui::{state::Page, view};
 
@@ -409,12 +505,10 @@ pub struct Papyrust {
 pub enum Message {
     SwitchPage(Page),
     NextProject,
-    /// (index, optional_bytes)
     PreviewLoaded(usize, Option<Vec<u8>>),
 }
 
 impl Papyrust {
-    /// We start with no projects loaded; fire off a single NextProject.
     fn new() -> (Self, Task<Message>) {
         let library = Library::new();
         let init = Task::perform(async {}, |_| Message::NextProject);
@@ -429,49 +523,11 @@ impl Papyrust {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
-            Message::SwitchPage(page) => {
-                self.current_page = page;
-                Task::none()
-            }
-
-            Message::NextProject => {
-                // load exactly one project…
-                self.library.load_next();
-                let idx = self.library.projects.len() - 1;
-                let mut tasks = Vec::new();
-
-                // …then spawn its preview‐load if it has one
-                if let Some(preview_name) = self.library.projects[idx].meta.preview.as_ref() {
-                    let path = format!("{}/{}", self.library.projects[idx].path, preview_name);
-                    tasks.push(Task::perform(
-                        async move { (idx, fs::read(path).ok()) },
-                        Message::PreviewLoaded,
-                    ));
-                }
-
-                // …and if there's more to go, queue up another NextProject
-                if self.library.has_more() {
-                    tasks.push(Task::perform(async {}, |_| Message::NextProject));
-                }
-
-                Task::batch(tasks)
-            }
-
-            Message::PreviewLoaded(index, maybe_bytes) => {
-                if let Some(bytes) = maybe_bytes {
-                    let handle = Handle::from_bytes(bytes);
-                    if index < self.library.preview_handles.len() {
-                        self.library.preview_handles[index] = Some(handle);
-                    }
-                }
-                Task::none()
-            }
-        }
+        state::update(self, message)
     }
 
     fn view(&self) -> Element<Message> {
-        view(self)
+        view::build(self)
     }
 }
 
