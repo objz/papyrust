@@ -1,3 +1,4 @@
+use iced::widget::image::Handle;
 use iced::{Element, Task};
 use ui::state;
 
@@ -18,6 +19,7 @@ pub enum Message {
     NextProject,
     PreviewLoaded(usize, Option<Vec<u8>>),
     LoadPreview(usize, String),
+    PreviewReady(usize, Handle),
 }
 
 impl Papyrust {
@@ -43,8 +45,7 @@ impl Papyrust {
     }
 }
 
-#[tokio::main]
-async fn main() -> iced::Result {
+fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)

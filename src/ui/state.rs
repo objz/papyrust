@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use iced::{widget::image::Handle, Task};
 use tokio::fs;
 
@@ -31,17 +33,25 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             }
 
             if app.library.remaining() {
-                tasks.push(Task::perform(async {}, |_| Message::NextProject));
+                tasks.push(Task::perform(
+                    async {
+                        tokio::time::sleep(Duration::from_millis(16)).await;
+                    },
+                    |_| Message::NextProject,
+                ));
             }
             Task::batch(tasks)
         }
 
         Message::PreviewLoaded(index, bytes) => {
             if let Some(bytes) = bytes {
-                let handle = Handle::from_bytes(bytes);
-                if index < app.library.preview.len() {
-                    app.library.preview[index] = Some(handle);
-                }
+                return Task::perform(
+                    async move {
+                        let handle = Handle::from_bytes(bytes);
+                        (index, handle)
+                    },
+                    |(idx, handle)| Message::PreviewReady(idx, handle),
+                );
             }
             Task::none()
         }
@@ -54,5 +64,11 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             },
             |(idx, data)| Message::PreviewLoaded(idx, data),
         ),
+        Message::PreviewReady(index, handle) => {
+            if index < app.library.preview.len() {
+                app.library.preview[index] = Some(handle);
+            }
+            Task::none()
+        }
     }
 }

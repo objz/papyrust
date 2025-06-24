@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use iced::widget::image::Handle;
 use iced::Task;
 use iced::{
@@ -45,6 +47,8 @@ impl Library {
 
                 return Some(Task::perform(
                     async move {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+
                         match fs::read(&path).await {
                             Ok(bytes) => (index, Some(bytes)),
                             Err(_) => (index, None),

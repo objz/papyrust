@@ -358,6 +358,8 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
 </file>
 
 <file path="src/ui/state.rs">
+use std::time::Duration;
+
 use iced::{widget::image::Handle, Task};
 use tokio::fs;
 
@@ -391,17 +393,25 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             }
 
             if app.library.remaining() {
-                tasks.push(Task::perform(async {}, |_| Message::NextProject));
+                tasks.push(Task::perform(
+                    async {
+                        tokio::time::sleep(Duration::from_millis(16)).await;
+                    },
+                    |_| Message::NextProject,
+                ));
             }
             Task::batch(tasks)
         }
 
         Message::PreviewLoaded(index, bytes) => {
             if let Some(bytes) = bytes {
-                let handle = Handle::from_bytes(bytes);
-                if index < app.library.preview.len() {
-                    app.library.preview[index] = Some(handle);
-                }
+                return Task::perform(
+                    async move {
+                        let handle = Handle::from_bytes(bytes);
+                        (index, handle)
+                    },
+                    |(idx, handle)| Message::PreviewReady(idx, handle),
+                );
             }
             Task::none()
         }
@@ -414,11 +424,19 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             },
             |(idx, data)| Message::PreviewLoaded(idx, data),
         ),
+        Message::PreviewReady(index, handle) => {
+            if index < app.library.preview.len() {
+                app.library.preview[index] = Some(handle);
+            }
+            Task::none()
+        }
     }
 }
 </file>
 
 <file path="src/ui/library.rs">
+use std::time::Duration;
+
 use iced::widget::image::Handle;
 use iced::Task;
 use iced::{
@@ -466,6 +484,8 @@ impl Library {
 
                 return Some(Task::perform(
                     async move {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+
                         match fs::read(&path).await {
                             Ok(bytes) => (index, Some(bytes)),
                             Err(_) => (index, None),
@@ -504,16 +524,21 @@ edition = "2024"
 [dependencies]
 derive = "1.0.0"
 futures = "0.3.31"
-iced = { version = "0.13.1", features = ["image"] }
+iced = { version = "0.13.1", features = ["image", "tokio"] }
 iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 shellexpand = "3.1.1"
 tokio = { version = "1.45.1", features = ["fs", "macros", "rt", "rt-multi-thread"] }
 url = "2.5.4"
+
+
+# [profile.release]
+# debug = "line-tables-only"
 </file>
 
 <file path="src/main.rs">
+use iced::widget::image::Handle;
 use iced::{Element, Task};
 use ui::state;
 
@@ -534,6 +559,7 @@ pub enum Message {
     NextProject,
     PreviewLoaded(usize, Option<Vec<u8>>),
     LoadPreview(usize, String),
+    PreviewReady(usize, Handle),
 }
 
 impl Papyrust {

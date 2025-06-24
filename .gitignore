@@ -1,2 +1,6 @@
 /target
-./repoxmix-output.xml
+repomix-output.xml
+flamegraph.svg
+perf.data
+perf.data.old
+stacks.folded
