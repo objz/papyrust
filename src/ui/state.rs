@@ -24,7 +24,8 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
         }
 
         Message::NextProject => {
-            app.library.load_next();
+            app.library.load_project();
+            app.library.load_preview();
             let idx = app.library.projects.len() - 1;
             let mut tasks = Vec::new();
 

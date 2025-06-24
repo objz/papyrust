@@ -22,15 +22,29 @@ impl Library {
         }
     }
 
-    pub fn load_next(&mut self) {
+    pub fn load_project(&mut self) {
         if let Some(result) = self.loader.next() {
             match result {
                 Ok(project) => {
                     self.projects.push(project);
-                    self.preview.push(None);
+                    // self.preview.push(None);
                 }
                 Err(e) => eprintln!("Project parse error: {}", e),
             }
+        }
+    }
+
+    pub fn load_preview(&mut self) {
+        if let Some(project) = self.projects.last() {
+            if let Some(name) = &project.meta.preview {
+                let path = format!("{}/{}", project.path, name);
+                let handle = Handle::from_path(path);
+                self.preview.push(Some(handle));
+            } else {
+                self.preview.push(None);
+            }
+        } else {
+            self.preview.push(None);
         }
     }
 
