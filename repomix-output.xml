@@ -201,11 +201,6 @@ fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
 }
 </file>
 
-<file path=".gitignore">
-/target
-./repoxmix-output.xml
-</file>
-
 <file path="src/ui/panel.rs">
 use iced::{
     widget::{text, Button, Container, Row},
@@ -235,6 +230,15 @@ pub fn build(_app: &crate::Papyrust) -> Element<Message> {
         .padding(Padding::from([10, 20]))
         .into()
 }
+</file>
+
+<file path=".gitignore">
+/target
+repomix-output.xml
+flamegraph.svg
+perf.data
+perf.data.old
+stacks.folded
 </file>
 
 <file path="src/ui/view.rs">
@@ -533,8 +537,8 @@ tokio = { version = "1.45.1", features = ["fs", "macros", "rt", "rt-multi-thread
 url = "2.5.4"
 
 
-# [profile.release]
-# debug = "line-tables-only"
+[profile.release]
+debug = true
 </file>
 
 <file path="src/main.rs">
@@ -585,8 +589,7 @@ impl Papyrust {
     }
 }
 
-#[tokio::main]
-async fn main() -> iced::Result {
+fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)

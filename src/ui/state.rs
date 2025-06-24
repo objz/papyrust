@@ -26,20 +26,17 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
 
         Message::NextProject => {
             app.library.load_project();
-            let mut tasks = Vec::new();
-
-            if let Some(preview_task) = app.library.load_preview() {
-                tasks.push(preview_task);
-            }
+            let mut tasks = app.library.load_previews();
 
             if app.library.remaining() {
                 tasks.push(Task::perform(
-                    async {
+                    async move {
                         tokio::time::sleep(Duration::from_millis(16)).await;
                     },
                     |_| Message::NextProject,
                 ));
             }
+
             Task::batch(tasks)
         }
 

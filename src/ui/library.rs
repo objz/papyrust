@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use iced::widget::image::Handle;
 use iced::Task;
 use iced::{
@@ -38,27 +36,29 @@ impl Library {
         }
     }
 
-    pub fn load_preview(&mut self) -> Option<Task<Message>> {
-        if let Some(project) = self.projects.last() {
-            let index = self.projects.len() - 1;
-
-            if let Some(name) = &project.meta.preview {
-                let path = format!("{}/{}", project.path, name);
-
-                return Some(Task::perform(
-                    async move {
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-
-                        match fs::read(&path).await {
-                            Ok(bytes) => (index, Some(bytes)),
-                            Err(_) => (index, None),
-                        }
-                    },
-                    |(idx, data)| Message::PreviewLoaded(idx, data),
-                ));
-            }
-        }
-        None
+    pub fn load_previews(&mut self) -> Vec<Task<Message>> {
+        self.projects
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, proj)| {
+                if self.preview[idx].is_none() {
+                    proj.meta.preview.as_ref().map(|name| {
+                        let path = format!("{}/{}", proj.path, name);
+                        Task::perform(
+                            async move {
+                                match fs::read(&path).await {
+                                    Ok(bytes) => (idx, Some(bytes)),
+                                    Err(_) => (idx, None),
+                                }
+                            },
+                            |(i, data)| Message::PreviewLoaded(i, data),
+                        )
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn remaining(&self) -> bool {
