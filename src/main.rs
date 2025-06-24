@@ -16,23 +16,20 @@ pub struct Papyrust {
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchPage(Page),
-    NextProject,
-    PreviewLoaded(usize, Option<Vec<u8>>),
-    LoadPreview(usize, String),
-    PreviewReady(usize, Handle),
+    PreviewReady(usize, Option<Handle>),
 }
 
 impl Papyrust {
     fn new() -> (Self, Task<Message>) {
         let library = Library::new();
-        let init = Task::perform(async {}, |_| Message::NextProject);
+        let tasks = library.load_previews();
 
         (
             Papyrust {
                 current_page: Page::default(),
                 library,
             },
-            init,
+            Task::batch(tasks),
         )
     }
 

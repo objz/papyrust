@@ -10,59 +10,50 @@ use crate::library::{loader::Loader, project::Project};
 use crate::{Message, Papyrust};
 
 pub struct Library {
-    loader: Loader,
     pub projects: Vec<Project>,
     pub preview: Vec<Option<Handle>>,
 }
 
 impl Library {
     pub fn new() -> Self {
-        Self {
-            loader: Loader::new(),
-            projects: Vec::new(),
-            preview: Vec::new(),
-        }
-    }
+        let mut loader = Loader::new();
+        let mut projects = Vec::new();
+        let mut preview = Vec::new();
 
-    pub fn load_project(&mut self) {
-        if let Some(result) = self.loader.next() {
+        while let Some(result) = loader.next() {
             match result {
                 Ok(project) => {
-                    self.projects.push(project);
-                    self.preview.push(None);
+                    projects.push(project);
+                    preview.push(None);
                 }
                 Err(e) => eprintln!("Project parse error: {}", e),
             }
         }
+
+        Self { projects, preview }
     }
 
-    pub fn load_previews(&mut self) -> Vec<Task<Message>> {
+    pub fn load_previews(&self) -> Vec<Task<Message>> {
         self.projects
             .iter()
             .enumerate()
             .filter_map(|(idx, proj)| {
-                if self.preview[idx].is_none() {
-                    proj.meta.preview.as_ref().map(|name| {
-                        let path = format!("{}/{}", proj.path, name);
-                        Task::perform(
-                            async move {
-                                match fs::read(&path).await {
-                                    Ok(bytes) => (idx, Some(bytes)),
-                                    Err(_) => (idx, None),
-                                }
-                            },
-                            |(i, data)| Message::PreviewLoaded(i, data),
-                        )
-                    })
-                } else {
-                    None
-                }
+                proj.meta.preview.as_ref().map(|name| {
+                    let path = format!("{}/{}", proj.path, name);
+                    Task::perform(
+                        async move {
+                            let data = fs::read(&path).await.ok();
+                            (idx, data.map(Handle::from_bytes))
+                        },
+                        |(i, handle)| Message::PreviewReady(i, handle),
+                    )
+                })
             })
             .collect()
     }
 
     pub fn remaining(&self) -> bool {
-        self.loader.remaining() > 0
+        !self.projects.is_empty()
     }
 }
 

@@ -57,10 +57,6 @@ impl Loader {
             Some(parse(&path, &dir))
         }
     }
-
-    pub fn remaining(&self) -> usize {
-        self.project_paths.len().saturating_sub(self.current)
-    }
 }
 
 fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
