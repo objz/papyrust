@@ -42,7 +42,8 @@ impl Papyrust {
     }
 }
 
-fn main() -> iced::Result {
+#[tokio::main]
+async fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)
