@@ -1,6 +1,5 @@
-use std::fs;
-
 use iced::{widget::image::Handle, Task};
+use tokio::fs;
 
 use crate::{Message, Papyrust};
 
@@ -25,22 +24,15 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
 
         Message::NextProject => {
             app.library.load_project();
-            app.library.load_preview();
-            let idx = app.library.projects.len() - 1;
             let mut tasks = Vec::new();
 
-            if let Some(name) = app.library.projects[idx].meta.preview.as_ref() {
-                let path = format!("{}/{}", app.library.projects[idx].path, name);
-                tasks.push(Task::perform(
-                    async move { (idx, fs::read(path).ok()) },
-                    |(i, data)| Message::PreviewLoaded(i, data),
-                ));
+            if let Some(preview_task) = app.library.load_preview() {
+                tasks.push(preview_task);
             }
 
             if app.library.remaining() {
                 tasks.push(Task::perform(async {}, |_| Message::NextProject));
             }
-
             Task::batch(tasks)
         }
 
@@ -53,5 +45,14 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::LoadPreview(index, path) => Task::perform(
+            async move {
+                match fs::read(&path).await {
+                    Ok(bytes) => (index, Some(bytes)),
+                    Err(_) => (index, None),
+                }
+            },
+            |(idx, data)| Message::PreviewLoaded(idx, data),
+        ),
     }
 }

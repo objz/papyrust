@@ -121,11 +121,6 @@ pub mod state;
 pub mod view;
 </file>
 
-<file path=".gitignore">
-/target
-./repoxmix-output.xml
-</file>
-
 <file path="src/library/loader.rs">
 use std::{fs, path::PathBuf};
 
@@ -204,6 +199,11 @@ fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
         path: dir.to_string_lossy().to_string(),
     })
 }
+</file>
+
+<file path=".gitignore">
+/target
+./repoxmix-output.xml
 </file>
 
 <file path="src/ui/panel.rs">
@@ -358,9 +358,8 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
 </file>
 
 <file path="src/ui/state.rs">
-use std::fs;
-
 use iced::{widget::image::Handle, Task};
+use tokio::fs;
 
 use crate::{Message, Papyrust};
 
@@ -385,21 +384,15 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
 
         Message::NextProject => {
             app.library.load_project();
-            let idx = app.library.projects.len() - 1;
             let mut tasks = Vec::new();
 
-            if let Some(name) = app.library.projects[idx].meta.preview.as_ref() {
-                let path = format!("{}/{}", app.library.projects[idx].path, name);
-                tasks.push(Task::perform(
-                    async move { (idx, fs::read(path).ok()) },
-                    |(i, data)| Message::PreviewLoaded(i, data),
-                ));
+            if let Some(preview_task) = app.library.load_preview() {
+                tasks.push(preview_task);
             }
 
             if app.library.remaining() {
                 tasks.push(Task::perform(async {}, |_| Message::NextProject));
             }
-
             Task::batch(tasks)
         }
 
@@ -412,16 +405,27 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::LoadPreview(index, path) => Task::perform(
+            async move {
+                match fs::read(&path).await {
+                    Ok(bytes) => (index, Some(bytes)),
+                    Err(_) => (index, None),
+                }
+            },
+            |(idx, data)| Message::PreviewLoaded(idx, data),
+        ),
     }
 }
 </file>
 
 <file path="src/ui/library.rs">
 use iced::widget::image::Handle;
+use iced::Task;
 use iced::{
     widget::{column, container, scrollable, text},
     Element, Length,
 };
+use tokio::fs;
 
 use crate::library::{loader::Loader, project::Project};
 use crate::{Message, Papyrust};
@@ -446,25 +450,32 @@ impl Library {
             match result {
                 Ok(project) => {
                     self.projects.push(project);
-                    // self.preview.push(None);
+                    self.preview.push(None);
                 }
                 Err(e) => eprintln!("Project parse error: {}", e),
             }
         }
     }
 
-    pub fn load_preview(&mut self) {
+    pub fn load_preview(&mut self) -> Option<Task<Message>> {
         if let Some(project) = self.projects.last() {
+            let index = self.projects.len() - 1;
+
             if let Some(name) = &project.meta.preview {
                 let path = format!("{}/{}", project.path, name);
-                let handle = Handle::from_path(path);
-                self.preview.push(Some(handle));
-            } else {
-                self.preview.push(None);
+
+                return Some(Task::perform(
+                    async move {
+                        match fs::read(&path).await {
+                            Ok(bytes) => (index, Some(bytes)),
+                            Err(_) => (index, None),
+                        }
+                    },
+                    |(idx, data)| Message::PreviewLoaded(idx, data),
+                ));
             }
-        } else {
-            self.preview.push(None);
         }
+        None
     }
 
     pub fn remaining(&self) -> bool {
@@ -492,6 +503,7 @@ edition = "2024"
 
 [dependencies]
 derive = "1.0.0"
+futures = "0.3.31"
 iced = { version = "0.13.1", features = ["image"] }
 iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -521,6 +533,7 @@ pub enum Message {
     SwitchPage(Page),
     NextProject,
     PreviewLoaded(usize, Option<Vec<u8>>),
+    LoadPreview(usize, String),
 }
 
 impl Papyrust {

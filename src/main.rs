@@ -17,6 +17,7 @@ pub enum Message {
     SwitchPage(Page),
     NextProject,
     PreviewLoaded(usize, Option<Vec<u8>>),
+    LoadPreview(usize, String),
 }
 
 impl Papyrust {

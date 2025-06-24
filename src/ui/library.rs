@@ -1,8 +1,10 @@
 use iced::widget::image::Handle;
+use iced::Task;
 use iced::{
     widget::{column, container, scrollable, text},
     Element, Length,
 };
+use tokio::fs;
 
 use crate::library::{loader::Loader, project::Project};
 use crate::{Message, Papyrust};
@@ -27,25 +29,32 @@ impl Library {
             match result {
                 Ok(project) => {
                     self.projects.push(project);
-                    // self.preview.push(None);
+                    self.preview.push(None);
                 }
                 Err(e) => eprintln!("Project parse error: {}", e),
             }
         }
     }
 
-    pub fn load_preview(&mut self) {
+    pub fn load_preview(&mut self) -> Option<Task<Message>> {
         if let Some(project) = self.projects.last() {
+            let index = self.projects.len() - 1;
+
             if let Some(name) = &project.meta.preview {
                 let path = format!("{}/{}", project.path, name);
-                let handle = Handle::from_path(path);
-                self.preview.push(Some(handle));
-            } else {
-                self.preview.push(None);
+
+                return Some(Task::perform(
+                    async move {
+                        match fs::read(&path).await {
+                            Ok(bytes) => (index, Some(bytes)),
+                            Err(_) => (index, None),
+                        }
+                    },
+                    |(idx, data)| Message::PreviewLoaded(idx, data),
+                ));
             }
-        } else {
-            self.preview.push(None);
         }
+        None
     }
 
     pub fn remaining(&self) -> bool {
