@@ -813,6 +813,7 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
                 text(title)
                     .size(16)
                     .width(Length::Fixed(ITEM_WIDTH - 20.0))
+                    .height(Length::Fixed(ITEM_HEIGHT - 120.0))
                     .align_x(Alignment::Center),
             )
             .spacing(5)
@@ -840,8 +841,9 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
                 .width(Length::Fixed(PREVIEW_WIDTH))
                 .height(Length::Fixed(PREVIEW_HEIGHT)),
         )
-        .width(Length::Fixed(120.0))
-        .height(Length::Fixed(120.0))
+        .width(Length::Fixed(PREVIEW_WIDTH))
+        .height(Length::Fixed(PREVIEW_HEIGHT))
+        .clip(true)
         .style(|_theme| iced::widget::container::Style {
             border: iced::Border {
                 radius: 4.0.into(),

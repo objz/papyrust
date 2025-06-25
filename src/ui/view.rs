@@ -14,7 +14,7 @@ const PREVIEW_WIDTH: f32 = 140.0;
 const PREVIEW_HEIGHT: f32 = 140.0;
 
 const ITEM_WIDTH: f32 = 160.0;
-const ITEM_HEIGHT: f32 = 180.0;
+const ITEM_HEIGHT: f32 = 200.0;
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let content = match app.current_page {
@@ -76,12 +76,11 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
             .push(preview)
             .push(
                 text(title)
-                    .size(16)
+                    .size(14)
                     .width(Length::Fixed(ITEM_WIDTH - 20.0))
-                    .height(Length::Fixed(ITEM_HEIGHT - 120.0))
                     .align_x(Alignment::Center),
             )
-            .spacing(5)
+            .spacing(8)
             .padding(10),
     )
     .width(Length::Fixed(ITEM_WIDTH))
