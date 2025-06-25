@@ -21,11 +21,11 @@ pub enum Message {
     Tick,
 }
 
-const FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
-const UNIFONT_BYTES: &[u8] = include_bytes!("../fonts/unifont.ttf");
+const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
+const _UNIFONT_BYTES: &[u8] = include_bytes!("../fonts/unifont.ttf");
 
-const FIRA: Font = Font::with_name("FiraCode Nerd");
-const UNIFONT: Font = Font::with_name("GNU Unifont");
+const _FIRA: Font = Font::with_name("FiraCode Nerd Font Mono Reg");
+const _UNIFONT: Font = Font::with_name("Unifont");
 
 impl Papyrust {
     fn new() -> (Self, Task<Message>) {
@@ -42,7 +42,7 @@ impl Papyrust {
     }
 
     pub fn tick(&mut self) {
-        self.animation_state = (self.animation_state + 1) % 6;
+        self.animation_state = (self.animation_state + 1) % 4;
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -60,9 +60,13 @@ impl Papyrust {
 
 fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
-        .font(FIRA_BYTES)
-        .font(UNIFONT_BYTES)
-        .default_font(FIRA)
+        // .font(FIRA_BYTES)
+        // .font(UNIFONT_BYTES)
+        // .default_font(FIRA)
+        .settings(Settings {
+            default_font: Font::MONOSPACE,
+            ..Default::default()
+        })
         .subscription(Papyrust::subscription)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)

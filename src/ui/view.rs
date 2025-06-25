@@ -6,7 +6,6 @@ use iced::{
 };
 use iced_aw::Wrap;
 
-use crate::UNIFONT;
 use crate::{library::project::Project, Message, Papyrust};
 
 use super::{discover, library, panel, state};
@@ -128,16 +127,13 @@ fn create_preview<'a>(
         .into()
     } else if project.meta.preview.is_some() {
         let dots = match app.animation_state {
-            0 => "⡀ Loading",
-            1 => "⡄ Loading",
-            2 => "⡆ Loading",
-            3 => "⡇ Loading",
-            4 => "⡏ Loading",
-            5 => "⡟ Loading",
-            _ => "⡀ Loading",
+            0 => "Loading.  ",
+            1 => "Loading.. ",
+            2 => "Loading...",
+            _ => "Loading   ",
         };
 
-        Container::new(text(dots).font(UNIFONT))
+        Container::new(text(dots))
             .width(Length::Fixed(PREVIEW_WIDTH))
             .height(Length::Fixed(PREVIEW_HEIGHT))
             .align_x(Horizontal::Center)
