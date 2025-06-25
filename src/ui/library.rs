@@ -73,7 +73,7 @@ impl Library {
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let lib = &app.library;
-    let grid = super::view::create_grid(&lib.projects, &lib.preview);
+    let grid = super::view::create_grid(&app, &lib.projects, &lib.preview);
 
     container(scrollable(column![text("Library").size(30), grid]))
         .padding(20)

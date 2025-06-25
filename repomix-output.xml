@@ -749,7 +749,7 @@ const PREVIEW_WIDTH: f32 = 140.0;
 const PREVIEW_HEIGHT: f32 = 140.0;
 
 const ITEM_WIDTH: f32 = 160.0;
-const ITEM_HEIGHT: f32 = 180.0;
+const ITEM_HEIGHT: f32 = 200.0;
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let content = match app.current_page {
@@ -785,6 +785,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
 }
 
 pub fn create_grid<'a>(
+    app: &'a Papyrust,
     projects: &'a [Project],
     preview: &'a [Option<Handle>],
 ) -> Element<'a, Message> {
@@ -792,7 +793,7 @@ pub fn create_grid<'a>(
 
     for (idx, project) in projects.iter().enumerate() {
         let handle = preview.get(idx).and_then(Clone::clone);
-        items.push(render_item(project, handle));
+        items.push(render_item(app, project, handle));
     }
 
     Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
@@ -801,9 +802,13 @@ pub fn create_grid<'a>(
         .into()
 }
 
-fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a, Message> {
+fn render_item<'a>(
+    app: &Papyrust,
+    project: &'a Project,
+    preview: Option<Handle>,
+) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");
-    let preview = create_preview(preview, project);
+    let preview = create_preview(app, preview, project);
 
     Container::new(
         Column::new()
@@ -811,12 +816,11 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
             .push(preview)
             .push(
                 text(title)
-                    .size(16)
+                    .size(14)
                     .width(Length::Fixed(ITEM_WIDTH - 20.0))
-                    .height(Length::Fixed(ITEM_HEIGHT - 120.0))
                     .align_x(Alignment::Center),
             )
-            .spacing(5)
+            .spacing(8)
             .padding(10),
     )
     .width(Length::Fixed(ITEM_WIDTH))
@@ -834,7 +838,11 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
     .into()
 }
 
-fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<'a, Message> {
+fn create_preview<'a>(
+    app: &Papyrust,
+    preview: Option<Handle>,
+    project: &'a Project,
+) -> Element<'a, Message> {
     if let Some(handle) = preview {
         Container::new(
             image(handle)
@@ -853,7 +861,17 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
         })
         .into()
     } else if project.meta.preview.is_some() {
-        Container::new(text("Loading..."))
+        let dots = match app.animation_state {
+            0 => "●○○ Loading",
+            1 => "○●○ Loading",
+            2 => "○○● Loading",
+            3 => "○●○ Loading",
+            4 => "●○○ Loading",
+            5 => "○○○ Loading",
+            _ => "○○○ Loading",
+        };
+
+        Container::new(text(dots))
             .width(Length::Fixed(PREVIEW_WIDTH))
             .height(Length::Fixed(PREVIEW_HEIGHT))
             .align_x(Horizontal::Center)
@@ -899,7 +917,7 @@ edition = "2024"
 [dependencies]
 derive = "1.0.0"
 futures = "0.3.31"
-iced = { version = "0.13.1", features = ["image", "tokio"] }
+iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
 iced_aw = { version = "0.12.2", features = ["wrap"] }
 iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
 image = "0.25.6"
@@ -946,6 +964,10 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             app.library.next().unwrap_or_else(Task::none)
         }
         Message::PreviewError(_idx) => app.library.next().unwrap_or_else(Task::none),
+        Message::Tick => {
+            app.tick();
+            Task::none()
+        }
     }
 }
 </file>
@@ -1026,7 +1048,7 @@ impl Library {
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let lib = &app.library;
-    let grid = super::view::create_grid(&lib.projects, &lib.preview);
+    let grid = super::view::create_grid(&app, &lib.projects, &lib.preview);
 
     container(scrollable(column![text("Library").size(30), grid]))
         .padding(20)
@@ -1037,7 +1059,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
 </file>
 
 <file path="src/main.rs">
-use iced::{Element, Task};
+use iced::{Element, Subscription, Task};
 use ui::state;
 
 mod library;
@@ -1049,6 +1071,7 @@ use ui::{state::Page, view};
 pub struct Papyrust {
     pub current_page: Page,
     pub library: Library,
+    pub animation_state: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1056,6 +1079,7 @@ pub enum Message {
     SwitchPage(Page),
     PreviewDecoded(usize, u32, u32, Vec<u8>),
     PreviewError(usize),
+    Tick,
 }
 
 impl Papyrust {
@@ -1066,9 +1090,14 @@ impl Papyrust {
             Papyrust {
                 current_page: Page::default(),
                 library,
+                animation_state: 0,
             },
             first,
         )
+    }
+
+    pub fn tick(&mut self) {
+        self.animation_state = (self.animation_state + 1) % 6;
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1078,10 +1107,15 @@ impl Papyrust {
     fn view(&self) -> Element<Message> {
         view::build(self)
     }
+
+    fn subscription(&self) -> Subscription<Message> {
+        iced::time::every(std::time::Duration::from_millis(300)).map(|_| Message::Tick)
+    }
 }
 
 fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
+        .subscription(Papyrust::subscription)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)
 }

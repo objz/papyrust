@@ -50,6 +50,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
 }
 
 pub fn create_grid<'a>(
+    app: &'a Papyrust,
     projects: &'a [Project],
     preview: &'a [Option<Handle>],
 ) -> Element<'a, Message> {
@@ -57,7 +58,7 @@ pub fn create_grid<'a>(
 
     for (idx, project) in projects.iter().enumerate() {
         let handle = preview.get(idx).and_then(Clone::clone);
-        items.push(render_item(project, handle));
+        items.push(render_item(app, project, handle));
     }
 
     Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
@@ -66,9 +67,13 @@ pub fn create_grid<'a>(
         .into()
 }
 
-fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a, Message> {
+fn render_item<'a>(
+    app: &Papyrust,
+    project: &'a Project,
+    preview: Option<Handle>,
+) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");
-    let preview = create_preview(preview, project);
+    let preview = create_preview(app, preview, project);
 
     Container::new(
         Column::new()
@@ -98,7 +103,11 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
     .into()
 }
 
-fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<'a, Message> {
+fn create_preview<'a>(
+    app: &Papyrust,
+    preview: Option<Handle>,
+    project: &'a Project,
+) -> Element<'a, Message> {
     if let Some(handle) = preview {
         Container::new(
             image(handle)
@@ -117,7 +126,17 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
         })
         .into()
     } else if project.meta.preview.is_some() {
-        Container::new(text("Loading..."))
+        let dots = match app.animation_state {
+            0 => "●○○ Loading",
+            1 => "○●○ Loading",
+            2 => "○○● Loading",
+            3 => "○●○ Loading",
+            4 => "●○○ Loading",
+            5 => "○○○ Loading",
+            _ => "○○○ Loading",
+        };
+
+        Container::new(text(dots))
             .width(Length::Fixed(PREVIEW_WIDTH))
             .height(Length::Fixed(PREVIEW_HEIGHT))
             .align_x(Horizontal::Center)

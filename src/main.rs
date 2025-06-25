@@ -1,4 +1,4 @@
-use iced::{Element, Task};
+use iced::{Element, Subscription, Task};
 use ui::state;
 
 mod library;
@@ -10,6 +10,7 @@ use ui::{state::Page, view};
 pub struct Papyrust {
     pub current_page: Page,
     pub library: Library,
+    pub animation_state: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,7 @@ pub enum Message {
     SwitchPage(Page),
     PreviewDecoded(usize, u32, u32, Vec<u8>),
     PreviewError(usize),
+    Tick,
 }
 
 impl Papyrust {
@@ -27,9 +29,14 @@ impl Papyrust {
             Papyrust {
                 current_page: Page::default(),
                 library,
+                animation_state: 0,
             },
             first,
         )
+    }
+
+    pub fn tick(&mut self) {
+        self.animation_state = (self.animation_state + 1) % 6;
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -39,10 +46,15 @@ impl Papyrust {
     fn view(&self) -> Element<Message> {
         view::build(self)
     }
+
+    fn subscription(&self) -> Subscription<Message> {
+        iced::time::every(std::time::Duration::from_millis(300)).map(|_| Message::Tick)
+    }
 }
 
 fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
+        .subscription(Papyrust::subscription)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)
 }

@@ -29,5 +29,9 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             app.library.next().unwrap_or_else(Task::none)
         }
         Message::PreviewError(_idx) => app.library.next().unwrap_or_else(Task::none),
+        Message::Tick => {
+            app.tick();
+            Task::none()
+        }
     }
 }

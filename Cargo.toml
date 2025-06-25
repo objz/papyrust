@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 derive = "1.0.0"
 futures = "0.3.31"
-iced = { version = "0.13.1", features = ["image", "tokio"] }
+iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
 iced_aw = { version = "0.12.2", features = ["wrap"] }
 iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
 image = "0.25.6"
