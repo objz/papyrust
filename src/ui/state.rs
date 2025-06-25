@@ -1,4 +1,4 @@
-use iced::Task;
+use iced::{widget::image::Handle, Task};
 
 use crate::{Message, Papyrust};
 
@@ -24,7 +24,7 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::PreviewDecoded(idx, w, h, pixels) => {
-            let handle = iced::widget::image::Handle::from_rgba(w, h, pixels);
+            let handle = Handle::from_rgba(w, h, pixels);
             app.library.preview[idx] = Some(handle);
             app.library.next().unwrap_or_else(Task::none)
         }

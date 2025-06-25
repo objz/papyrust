@@ -69,10 +69,6 @@ impl Library {
                 )
             })
     }
-
-    pub fn remaining(&self) -> bool {
-        !self.projects.is_empty()
-    }
 }
 
 pub fn build(app: &Papyrust) -> Element<Message> {

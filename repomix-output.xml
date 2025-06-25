@@ -381,7 +381,7 @@ debug = true
 </file>
 
 <file path="src/ui/state.rs">
-use iced::Task;
+use iced::{widget::image::Handle, Task};
 
 use crate::{Message, Papyrust};
 
@@ -407,11 +407,11 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::PreviewDecoded(idx, w, h, pixels) => {
-            let handle = iced::widget::image::Handle::from_rgba(w, h, pixels);
+            let handle = Handle::from_rgba(w, h, pixels);
             app.library.preview[idx] = Some(handle);
             app.library.next().unwrap_or_else(Task::none)
         }
-        Message::PreviewError(idx) => app.library.next().unwrap_or_else(Task::none),
+        Message::PreviewError(_idx) => app.library.next().unwrap_or_else(Task::none),
     }
 }
 </file>
@@ -463,7 +463,7 @@ impl Library {
                 let path = format!("{}/{}", proj.path, name);
                 Task::perform(
                     async move {
-                        let buf = tokio::fs::read(&path).await.ok();
+                        let buf = fs::read(&path).await.ok();
                         if let Some(bytes) = buf {
                             let decode = task::spawn_blocking(move || {
                                 let img = load_from_memory(&bytes).ok()?;
@@ -488,29 +488,6 @@ impl Library {
                 )
             })
     }
-
-    pub fn load_previews(&self) -> Vec<Task<Message>> {
-        self.projects
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, proj)| {
-                proj.meta.preview.as_ref().map(|name| {
-                    let path = format!("{}/{}", proj.path, name);
-                    Task::perform(
-                        async move {
-                            let data = fs::read(&path).await.ok();
-                            (idx, data.map(Handle::from_bytes))
-                        },
-                        |(i, handle)| Message::PreviewReady(i, handle),
-                    )
-                })
-            })
-            .collect()
-    }
-
-    pub fn remaining(&self) -> bool {
-        !self.projects.is_empty()
-    }
 }
 
 pub fn build(app: &Papyrust) -> Element<Message> {
@@ -526,7 +503,6 @@ pub fn build(app: &Papyrust) -> Element<Message> {
 </file>
 
 <file path="src/main.rs">
-use iced::widget::image::Handle;
 use iced::{Element, Task};
 use ui::state;
 
