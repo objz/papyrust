@@ -21,15 +21,14 @@ pub enum Message {
 
 impl Papyrust {
     fn new() -> (Self, Task<Message>) {
-        let library = Library::new();
-        let tasks = library.load_previews();
-
+        let mut library = Library::new();
+        let first = library.next().unwrap_or_else(Task::none);
         (
             Papyrust {
                 current_page: Page::default(),
                 library,
             },
-            Task::batch(tasks),
+            first,
         )
     }
 

@@ -33,6 +33,24 @@ impl Library {
         Self { projects, preview }
     }
 
+    pub fn next(&mut self) -> Option<Task<Message>> {
+        self.projects
+            .iter()
+            .enumerate()
+            .find(|(idx, proj)| self.preview[*idx].is_none() && proj.meta.preview.is_some())
+            .map(|(idx, proj)| {
+                let name = proj.meta.preview.as_ref().unwrap().clone();
+                let path = format!("{}/{}", proj.path, name);
+                Task::perform(
+                    async move {
+                        let data = tokio::fs::read(&path).await.ok();
+                        (idx, data.map(Handle::from_bytes))
+                    },
+                    |(i, handle)| Message::PreviewReady(i, handle),
+                )
+            })
+    }
+
     pub fn load_previews(&self) -> Vec<Task<Message>> {
         self.projects
             .iter()

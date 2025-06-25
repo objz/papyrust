@@ -18,6 +18,9 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
     match message {
         Message::SwitchPage(page) => {
             app.current_page = page;
+            if page == Page::Library {
+                return app.library.next().unwrap_or_else(Task::none);
+            }
             Task::none()
         }
         Message::PreviewReady(index, handle_opt) => {
@@ -26,7 +29,7 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
                     app.library.preview[index] = Some(handle);
                 }
             }
-            Task::none()
+            app.library.next().unwrap_or_else(Task::none)
         }
     }
 }
