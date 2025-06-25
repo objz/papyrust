@@ -1,9 +1,10 @@
 use iced::Alignment;
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{image, image::Handle, text, Column, Container, Row},
+    widget::{image, image::Handle, text, Column, Container},
     Element, Length, Padding,
 };
+use iced_aw::Wrap;
 
 use crate::{library::project::Project, Message, Papyrust};
 
@@ -46,38 +47,16 @@ pub fn create_grid<'a>(
     projects: &'a [Project],
     preview: &'a [Option<Handle>],
 ) -> Element<'a, Message> {
-    const ITEMS_PER_ROW: usize = 6;
-    let mut rows = Vec::new();
-    let mut idx = 0;
+    let mut items = Vec::new();
 
-    for chunk in projects.chunks(ITEMS_PER_ROW) {
-        let mut cells = Vec::new();
-
-        for project in chunk {
-            let handle = preview.get(idx).and_then(Clone::clone);
-            cells.push(render_item(project, handle));
-            idx += 1;
-        }
-
-        while cells.len() < ITEMS_PER_ROW {
-            cells.push(
-                Container::new(text(""))
-                    .width(Length::FillPortion(1))
-                    .into(),
-            );
-        }
-
-        rows.push(
-            Row::with_children(cells)
-                .spacing(8)
-                .width(Length::Fill)
-                .into(),
-        );
+    for (idx, project) in projects.iter().enumerate() {
+        let handle = preview.get(idx).and_then(Clone::clone);
+        items.push(render_item(project, handle));
     }
 
-    Column::with_children(rows)
-        .spacing(8)
+    Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
         .width(Length::Fill)
+        .padding(8)
         .into()
 }
 
@@ -89,34 +68,80 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
         Column::new()
             .align_x(Alignment::Center)
             .push(preview)
-            .push(text(title).size(16))
+            .push(
+                text(title)
+                    .size(16)
+                    .width(Length::Fixed(180.0))
+                    .align_x(Alignment::Center),
+            )
             .spacing(5)
             .padding(10),
     )
-    .width(Length::FillPortion(1))
-    .height(Length::Fixed(180.0))
+    .width(Length::Fixed(200.0))
+    .height(Length::Fixed(200.0))
+    .style(|_theme| iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgba(
+            0.0, 0.0, 0.0, 0.05,
+        ))),
+        border: iced::Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
     .into()
 }
 
 fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<'a, Message> {
     if let Some(handle) = preview {
-        image(handle)
-            .width(Length::Fill)
-            .height(Length::Fixed(120.0))
-            .into()
+        Container::new(
+            image(handle)
+                .width(Length::Fixed(180.0))
+                .height(Length::Fixed(120.0)),
+        )
+        .width(Length::Fixed(180.0))
+        .height(Length::Fixed(120.0))
+        .style(|_theme| iced::widget::container::Style {
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
     } else if project.meta.preview.is_some() {
         Container::new(text("Loading..."))
-            .width(Length::Fill)
+            .width(Length::Fixed(180.0))
             .height(Length::Fixed(120.0))
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center)
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(iced::Background::Color(iced::Color::from_rgba(
+                    0.5, 0.5, 0.5, 0.1,
+                ))),
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .into()
     } else {
         Container::new(text("No preview"))
-            .width(Length::Fill)
+            .width(Length::Fixed(180.0))
             .height(Length::Fixed(120.0))
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center)
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(iced::Background::Color(iced::Color::from_rgba(
+                    0.5, 0.5, 0.5, 0.1,
+                ))),
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .into()
     }
 }
