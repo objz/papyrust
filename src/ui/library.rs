@@ -4,7 +4,8 @@ use iced::{
     widget::{column, container, scrollable, text},
     Element, Length,
 };
-use tokio::fs;
+use image::load_from_memory;
+use tokio::{fs, task};
 
 use crate::library::{loader::Loader, project::Project};
 use crate::{Message, Papyrust};
@@ -43,31 +44,30 @@ impl Library {
                 let path = format!("{}/{}", proj.path, name);
                 Task::perform(
                     async move {
-                        let data = tokio::fs::read(&path).await.ok();
-                        (idx, data.map(Handle::from_bytes))
+                        let buf = fs::read(&path).await.ok();
+                        if let Some(bytes) = buf {
+                            let decode = task::spawn_blocking(move || {
+                                let img = load_from_memory(&bytes).ok()?;
+                                let rgba = img.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                Some((w, h, rgba.into_raw()))
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+
+                            if let Some((w, h, pixels)) = decode {
+                                return (idx, Ok((w, h, pixels)));
+                            }
+                        }
+                        (idx, Err(()))
                     },
-                    |(i, handle)| Message::PreviewReady(i, handle),
+                    |(i, result)| match result {
+                        Ok((w, h, pixels)) => Message::PreviewDecoded(i, w, h, pixels),
+                        Err(_) => Message::PreviewError(i),
+                    },
                 )
             })
-    }
-
-    pub fn load_previews(&self) -> Vec<Task<Message>> {
-        self.projects
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, proj)| {
-                proj.meta.preview.as_ref().map(|name| {
-                    let path = format!("{}/{}", proj.path, name);
-                    Task::perform(
-                        async move {
-                            let data = fs::read(&path).await.ok();
-                            (idx, data.map(Handle::from_bytes))
-                        },
-                        |(i, handle)| Message::PreviewReady(i, handle),
-                    )
-                })
-            })
-            .collect()
     }
 
     pub fn remaining(&self) -> bool {

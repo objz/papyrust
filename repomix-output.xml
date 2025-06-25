@@ -357,6 +357,29 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
 }
 </file>
 
+<file path="Cargo.toml">
+[package]
+name = "papyrust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive = "1.0.0"
+futures = "0.3.31"
+iced = { version = "0.13.1", features = ["image", "tokio"] }
+iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
+image = "0.25.6"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+shellexpand = "3.1.1"
+tokio = { version = "1.45.1", features = ["fs", "macros", "rt", "rt-multi-thread"] }
+url = "2.5.4"
+
+
+[profile.release]
+debug = true
+</file>
+
 <file path="src/ui/state.rs">
 use iced::Task;
 
@@ -383,38 +406,14 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::PreviewReady(index, handle_opt) => {
-            if let Some(handle) = handle_opt {
-                if index < app.library.preview.len() {
-                    app.library.preview[index] = Some(handle);
-                }
-            }
+        Message::PreviewDecoded(idx, w, h, pixels) => {
+            let handle = iced::widget::image::Handle::from_rgba(w, h, pixels);
+            app.library.preview[idx] = Some(handle);
             app.library.next().unwrap_or_else(Task::none)
         }
+        Message::PreviewError(idx) => app.library.next().unwrap_or_else(Task::none),
     }
 }
-</file>
-
-<file path="Cargo.toml">
-[package]
-name = "papyrust"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-derive = "1.0.0"
-futures = "0.3.31"
-iced = { version = "0.13.1", features = ["image", "tokio"] }
-iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-shellexpand = "3.1.1"
-tokio = { version = "1.45.1", features = ["fs", "macros", "rt", "rt-multi-thread"] }
-url = "2.5.4"
-
-
-[profile.release]
-debug = true
 </file>
 
 <file path="src/ui/library.rs">
@@ -424,7 +423,8 @@ use iced::{
     widget::{column, container, scrollable, text},
     Element, Length,
 };
-use tokio::fs;
+use image::load_from_memory;
+use tokio::{fs, task};
 
 use crate::library::{loader::Loader, project::Project};
 use crate::{Message, Papyrust};
@@ -463,10 +463,28 @@ impl Library {
                 let path = format!("{}/{}", proj.path, name);
                 Task::perform(
                     async move {
-                        let data = tokio::fs::read(&path).await.ok();
-                        (idx, data.map(Handle::from_bytes))
+                        let buf = tokio::fs::read(&path).await.ok();
+                        if let Some(bytes) = buf {
+                            let decode = task::spawn_blocking(move || {
+                                let img = load_from_memory(&bytes).ok()?;
+                                let rgba = img.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                Some((w, h, rgba.into_raw()))
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+
+                            if let Some((w, h, pixels)) = decode {
+                                return (idx, Ok((w, h, pixels)));
+                            }
+                        }
+                        (idx, Err(()))
                     },
-                    |(i, handle)| Message::PreviewReady(i, handle),
+                    |(i, result)| match result {
+                        Ok((w, h, pixels)) => Message::PreviewDecoded(i, w, h, pixels),
+                        Err(_) => Message::PreviewError(i),
+                    },
                 )
             })
     }
@@ -526,7 +544,8 @@ pub struct Papyrust {
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchPage(Page),
-    PreviewReady(usize, Option<Handle>),
+    PreviewDecoded(usize, u32, u32, Vec<u8>),
+    PreviewError(usize),
 }
 
 impl Papyrust {
@@ -538,7 +557,6 @@ impl Papyrust {
                 current_page: Page::default(),
                 library,
             },
-            // Task::batch(tasks),
             first,
         )
     }

@@ -1,4 +1,3 @@
-use iced::widget::image::Handle;
 use iced::{Element, Task};
 use ui::state;
 
@@ -16,7 +15,8 @@ pub struct Papyrust {
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchPage(Page),
-    PreviewReady(usize, Option<Handle>),
+    PreviewDecoded(usize, u32, u32, Vec<u8>),
+    PreviewError(usize),
 }
 
 impl Papyrust {
