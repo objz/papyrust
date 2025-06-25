@@ -10,6 +10,12 @@ use crate::{library::project::Project, Message, Papyrust};
 
 use super::{discover, library, panel, state};
 
+const PREVIEW_WIDTH: f32 = 140.0;
+const PREVIEW_HEIGHT: f32 = 140.0;
+
+const ITEM_WIDTH: f32 = 160.0;
+const ITEM_HEIGHT: f32 = 180.0;
+
 pub fn build(app: &Papyrust) -> Element<Message> {
     let content = match app.current_page {
         state::Page::Discover => discover::build(app),
@@ -71,14 +77,15 @@ fn render_item<'a>(project: &'a Project, preview: Option<Handle>) -> Element<'a,
             .push(
                 text(title)
                     .size(16)
-                    .width(Length::Fixed(180.0))
+                    .width(Length::Fixed(ITEM_WIDTH - 20.0))
+                    .height(Length::Fixed(ITEM_HEIGHT - 120.0))
                     .align_x(Alignment::Center),
             )
             .spacing(5)
             .padding(10),
     )
-    .width(Length::Fixed(200.0))
-    .height(Length::Fixed(200.0))
+    .width(Length::Fixed(ITEM_WIDTH))
+    .height(Length::Fixed(ITEM_HEIGHT))
     .style(|_theme| iced::widget::container::Style {
         background: Some(iced::Background::Color(iced::Color::from_rgba(
             0.0, 0.0, 0.0, 0.05,
@@ -96,11 +103,12 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
     if let Some(handle) = preview {
         Container::new(
             image(handle)
-                .width(Length::Fixed(180.0))
-                .height(Length::Fixed(120.0)),
+                .width(Length::Fixed(PREVIEW_WIDTH))
+                .height(Length::Fixed(PREVIEW_HEIGHT)),
         )
-        .width(Length::Fixed(180.0))
-        .height(Length::Fixed(120.0))
+        .width(Length::Fixed(PREVIEW_WIDTH))
+        .height(Length::Fixed(PREVIEW_HEIGHT))
+        .clip(true)
         .style(|_theme| iced::widget::container::Style {
             border: iced::Border {
                 radius: 4.0.into(),
@@ -111,8 +119,8 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
         .into()
     } else if project.meta.preview.is_some() {
         Container::new(text("Loading..."))
-            .width(Length::Fixed(180.0))
-            .height(Length::Fixed(120.0))
+            .width(Length::Fixed(PREVIEW_WIDTH))
+            .height(Length::Fixed(PREVIEW_HEIGHT))
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center)
             .style(|_theme| iced::widget::container::Style {
@@ -128,8 +136,8 @@ fn create_preview<'a>(preview: Option<Handle>, project: &'a Project) -> Element<
             .into()
     } else {
         Container::new(text("No preview"))
-            .width(Length::Fixed(180.0))
-            .height(Length::Fixed(120.0))
+            .width(Length::Fixed(PREVIEW_WIDTH))
+            .height(Length::Fixed(PREVIEW_HEIGHT))
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center)
             .style(|_theme| iced::widget::container::Style {
