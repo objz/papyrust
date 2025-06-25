@@ -1,4 +1,4 @@
-use iced::{Element, Subscription, Task};
+use iced::{Element, Font, Settings, Subscription, Task};
 use ui::state;
 
 mod library;
@@ -20,6 +20,12 @@ pub enum Message {
     PreviewError(usize),
     Tick,
 }
+
+const FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
+const UNIFONT_BYTES: &[u8] = include_bytes!("../fonts/unifont.ttf");
+
+const FIRA: Font = Font::with_name("FiraCode Nerd");
+const UNIFONT: Font = Font::with_name("GNU Unifont");
 
 impl Papyrust {
     fn new() -> (Self, Task<Message>) {
@@ -54,6 +60,9 @@ impl Papyrust {
 
 fn main() -> iced::Result {
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
+        .font(FIRA_BYTES)
+        .font(UNIFONT_BYTES)
+        .default_font(FIRA)
         .subscription(Papyrust::subscription)
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)
