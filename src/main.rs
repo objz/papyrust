@@ -30,6 +30,7 @@ pub enum Message {
     LoadVideo(String),
     VideoLoaded(String),
     VideoError(String, String),
+    DoNothing,
 }
 
 const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");

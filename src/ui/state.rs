@@ -45,6 +45,9 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ClosePopup => {
+            for video in app.videos.values_mut() {
+                video.set_paused(true);
+            }
             app.popup_state = None;
             Task::none()
         }
@@ -60,5 +63,6 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             eprintln!("Failed to load video {}: {}", path, error);
             Task::none()
         }
+        Message::DoNothing => Task::none(),
     }
 }

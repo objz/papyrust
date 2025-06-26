@@ -1,6 +1,6 @@
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{button, text, Button, Column, Container, Row, Space},
+    widget::{button, mouse_area, text, Button, Column, Container, Row, Space},
     Background, Border, Color, Element, Length, Padding, Shadow, Vector,
 };
 use iced_video_player::VideoPlayer;
@@ -110,16 +110,21 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center);
 
-    Container::new(popup)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_theme| iced::widget::container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
-            ..Default::default()
-        })
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .into()
+    let protected = mouse_area(popup).on_press(Message::DoNothing);
+
+    mouse_area(
+        Container::new(protected)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
+                ..Default::default()
+            })
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center),
+    )
+    .on_press(Message::ClosePopup)
+    .into()
 }
 
 fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
