@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use iced::{Element, Font, Settings, Subscription, Task};
+use iced_video_player::Video;
 use library::project::Project;
 use ui::state;
 
@@ -13,6 +16,7 @@ pub struct Papyrust {
     pub library: Library,
     pub animation_state: usize,
     pub popup_state: Option<Project>,
+    pub videos: HashMap<String, Video>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,9 +45,21 @@ impl Papyrust {
                 library,
                 animation_state: 0,
                 popup_state: None,
+                videos: HashMap::new(),
             },
             first,
         )
+    }
+
+    pub fn video(&mut self, path: &str) -> Option<&Video> {
+        if !self.videos.contains_key(path) {
+            if let Ok(url) = url::Url::parse(&format!("file://{}", path)) {
+                if let Ok(video) = Video::new(&url) {
+                    self.videos.insert(path.to_string(), video);
+                }
+            }
+        }
+        self.videos.get(path)
     }
 
     pub fn tick(&mut self) {
