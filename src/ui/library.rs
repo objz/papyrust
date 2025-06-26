@@ -241,7 +241,7 @@ pub fn render_item<'a>(
             },
         }
     })
-    .on_press(Message::ProjectClicked(project.clone()))
+    .on_press(Message::OpenPopup(project.clone()))
     .into()
 }
 

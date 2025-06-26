@@ -33,6 +33,13 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             app.tick();
             Task::none()
         }
-        _ => Task::none(),
+        Message::OpenPopup(project) => {
+            app.popup_state = Some(project);
+            Task::none()
+        }
+        Message::ClosePopup => {
+            app.popup_state = None;
+            Task::none()
+        }
     }
 }

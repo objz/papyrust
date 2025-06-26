@@ -12,6 +12,7 @@ pub struct Papyrust {
     pub current_page: Page,
     pub library: Library,
     pub animation_state: usize,
+    pub popup_state: Option<Project>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,7 +20,8 @@ pub enum Message {
     SwitchPage(Page),
     PreviewDecoded(usize, u32, u32, Vec<u8>),
     PreviewError(usize),
-    ProjectClicked(Project),
+    OpenPopup(Project),
+    ClosePopup,
     Tick,
 }
 
@@ -38,6 +40,7 @@ impl Papyrust {
                 current_page: Page::default(),
                 library,
                 animation_state: 0,
+                popup_state: None,
             },
             first,
         )

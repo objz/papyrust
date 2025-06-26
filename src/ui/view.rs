@@ -1,13 +1,13 @@
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{image::Handle, Column, Container},
+    widget::{image::Handle, Column, Container, Stack},
     Element, Length, Padding,
 };
 use iced_aw::Wrap;
 
 use crate::{library::project::Project, Message, Papyrust};
 
-use super::{discover, library, panel, state};
+use super::{discover, library, panel, popup, state};
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let content = match app.current_page {
@@ -32,14 +32,20 @@ pub fn build(app: &Papyrust) -> Element<Message> {
         .align_x(Horizontal::Center)
         .align_y(Vertical::Bottom);
 
-    Column::new()
-        .push(main)
-        .push(
-            Container::new(panel)
-                .width(Length::Fill)
-                .height(Length::Fixed(80.0)),
-        )
-        .into()
+    let main_content = Column::new().push(main).push(
+        Container::new(panel)
+            .width(Length::Fill)
+            .height(Length::Fixed(80.0)),
+    );
+
+    if let Some(ref project) = app.popup_state {
+        Stack::new()
+            .push(main_content)
+            .push(popup::build(project))
+            .into()
+    } else {
+        main_content.into()
+    }
 }
 
 pub fn create_grid<'a>(
