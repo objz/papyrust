@@ -76,10 +76,15 @@ pub fn build(_app: &Papyrust) -> Element<Message> {
 }
 </file>
 
+<file path="src/library/mod.rs">
+pub mod loader;
+pub mod project;
+</file>
+
 <file path="src/ui/popup.rs">
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{button, text, Button, Column, Container},
+    widget::{button, text, Button, Column, Container, Row},
     Color, Element, Length, Padding,
 };
 use iced_video_player::VideoPlayer;
@@ -89,10 +94,37 @@ use crate::{library::project::Project, Message, Papyrust};
 pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");
 
-    // Create video preview widget
-    let video_preview = create_video_preview(app, project);
+    // Create video preview widget with 16:9 aspect ratio
+    let video_preview = create_preview(app, project);
 
-    let popup_content = Column::new()
+    // Close button positioned at top-right
+    let close_button = Button::new(text("✕").size(16))
+        .on_press(Message::ClosePopup)
+        .padding(Padding::from([8, 12]))
+        .style(|_theme, status| {
+            let base_color = Color::from_rgba(0.8, 0.2, 0.2, 0.8);
+            let hover_color = Color::from_rgba(1.0, 0.3, 0.3, 0.9);
+
+            button::Style {
+                background: Some(iced::Background::Color(
+                    if matches!(status, iced::widget::button::Status::Hovered) {
+                        hover_color
+                    } else {
+                        base_color
+                    },
+                )),
+                border: iced::Border {
+                    radius: 20.0.into(),
+                    width: 1.0,
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                },
+                text_color: Color::WHITE,
+                ..Default::default()
+            }
+        });
+
+    // Header with title and close button
+    let header = Row::new()
         .push(
             text(title)
                 .size(24)
@@ -101,50 +133,47 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
                     ..Default::default()
                 }),
         )
+        .push(close_button)
+        .align_y(Vertical::Center);
+
+    let popup_content = Column::new()
+        .push(header)
         .push(video_preview)
-        .push(
-            Button::new(text("Close"))
-                .on_press(Message::ClosePopup)
-                .padding(Padding::from([8, 16]))
-                .style(|_theme, _status| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgba(
-                        0.4, 0.4, 0.4, 0.8,
-                    ))),
-                    border: iced::Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-        )
         .spacing(20)
         .align_x(iced::Alignment::Center);
 
+    // Main popup container with larger size for 16:9 videos
     let popup = Container::new(popup_content)
-        .width(Length::Fixed(500.0))
-        .height(Length::Fixed(450.0))
+        .width(Length::Fixed(800.0)) // Increased from 500
+        .height(Length::Fixed(600.0)) // Increased from 450
         .padding(30)
         .style(|_theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(Color::from_rgba(
-                0.1, 0.1, 0.1, 0.95,
+                0.05, 0.05, 0.05, 0.98, // Darker and more opaque
             ))),
             border: iced::Border {
-                radius: 12.0.into(),
-                width: 1.0,
-                color: Color::from_rgba(0.5, 0.5, 0.5, 0.3),
+                radius: 16.0.into(), // Increased border radius
+                width: 2.0,          // Slightly thicker border
+                color: Color::from_rgba(0.6, 0.6, 0.6, 0.4),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                offset: iced::Vector::new(0.0, 8.0),
+                blur_radius: 24.0,
             },
             ..Default::default()
         })
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center);
 
+    // Background overlay with stronger blur effect
+    // Note: For click-outside-to-close, you'll need to handle this in your main event loop
     Container::new(popup)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(Color::from_rgba(
-                0.0, 0.0, 0.0, 0.7,
+                0.0, 0.0, 0.0, 0.85, // Stronger overlay
             ))),
             ..Default::default()
         })
@@ -153,29 +182,35 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
         .into()
 }
 
-fn create_video_preview(app: &Papyrust, project: &Project) -> Element<Message> {
-    // Try to get the video file path
+fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
     if let Some(file_name) = &project.meta.file {
         let video_path = format!("{}/{}", project.path, file_name);
 
-        // Check if we already have this video loaded
-        if let Some(video) = app.get_video(&video_path) {
-            // Create the video player widget
+        if let Some(video) = app.peek_video(&video_path) {
+            // 16:9 aspect ratio dimensions (larger for better viewing)
+            let video_width = 720.0;
+            let video_height = 405.0; // 720 * 9/16 = 405
+
             Container::new(
                 VideoPlayer::new(video)
-                    .width(Length::Fixed(400.0))
-                    .height(Length::Fixed(300.0)),
+                    .width(Length::Fixed(video_width))
+                    .height(Length::Fixed(video_height)),
             )
-            .width(Length::Fixed(400.0))
-            .height(Length::Fixed(300.0))
+            .width(Length::Fixed(video_width))
+            .height(Length::Fixed(video_height))
             .style(|_theme| iced::widget::container::Style {
                 background: Some(iced::Background::Color(Color::from_rgba(
-                    0.0, 0.0, 0.0, 0.9,
+                    0.0, 0.0, 0.0, 0.95,
                 ))),
                 border: iced::Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
-                    color: Color::from_rgba(0.5, 0.5, 0.5, 0.3),
+                    radius: 12.0.into(),
+                    width: 2.0,
+                    color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 12.0,
                 },
                 ..Default::default()
             })
@@ -183,7 +218,6 @@ fn create_video_preview(app: &Papyrust, project: &Project) -> Element<Message> {
             .align_y(Vertical::Center)
             .into()
         } else {
-            // Video not loaded yet, show loading message
             let dots = match app.animation_state {
                 0 => "Loading video.  ",
                 1 => "Loading video.. ",
@@ -191,24 +225,28 @@ fn create_video_preview(app: &Papyrust, project: &Project) -> Element<Message> {
                 _ => "Loading video   ",
             };
 
+            // Match the video dimensions for consistency
+            let video_width = 720.0;
+            let video_height = 405.0;
+
             Container::new(
                 text(dots)
-                    .size(14)
+                    .size(18) // Slightly larger text
                     .style(|_theme| iced::widget::text::Style {
-                        color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+                        color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8)),
                         ..Default::default()
                     }),
             )
-            .width(Length::Fixed(400.0))
-            .height(Length::Fixed(300.0))
+            .width(Length::Fixed(video_width))
+            .height(Length::Fixed(video_height))
             .style(|_theme| iced::widget::container::Style {
                 background: Some(iced::Background::Color(Color::from_rgba(
-                    0.2, 0.2, 0.2, 0.8,
+                    0.15, 0.15, 0.15, 0.9,
                 ))),
                 border: iced::Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
-                    color: Color::from_rgba(0.5, 0.5, 0.5, 0.3),
+                    radius: 12.0.into(),
+                    width: 2.0,
+                    color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
                 },
                 ..Default::default()
             })
@@ -217,23 +255,25 @@ fn create_video_preview(app: &Papyrust, project: &Project) -> Element<Message> {
             .into()
         }
     } else {
-        // Fallback when no video file is specified
-        Container::new(text("No video file available").size(14).style(|_theme| {
+        let video_width = 720.0;
+        let video_height = 405.0;
+
+        Container::new(text("No video available").size(18).style(|_theme| {
             iced::widget::text::Style {
-                color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+                color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8)),
                 ..Default::default()
             }
         }))
-        .width(Length::Fixed(400.0))
-        .height(Length::Fixed(300.0))
+        .width(Length::Fixed(video_width))
+        .height(Length::Fixed(video_height))
         .style(|_theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(Color::from_rgba(
-                0.2, 0.2, 0.2, 0.8,
+                0.15, 0.15, 0.15, 0.9,
             ))),
             border: iced::Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: Color::from_rgba(0.5, 0.5, 0.5, 0.3),
+                radius: 12.0.into(),
+                width: 2.0,
+                color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
             },
             ..Default::default()
         })
@@ -242,11 +282,6 @@ fn create_video_preview(app: &Papyrust, project: &Project) -> Element<Message> {
         .into()
     }
 }
-</file>
-
-<file path="src/library/mod.rs">
-pub mod loader;
-pub mod project;
 </file>
 
 <file path="src/library/project.rs">
@@ -946,7 +981,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
     if let Some(ref project) = app.popup_state {
         Stack::new()
             .push(main_content)
-            .push(popup::build(app, project)) // Added app parameter here
+            .push(popup::build(app, project))
             .into()
     } else {
         main_content.into()
@@ -970,6 +1005,31 @@ pub fn create_grid<'a>(
         .padding(8)
         .into()
 }
+</file>
+
+<file path="Cargo.toml">
+[package]
+name = "papyrust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive = "1.0.0"
+fast_image_resize = { version = "5.1.4", features = ["image"] }
+futures = "0.3.31"
+iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
+iced_aw = { version = "0.12.2", features = ["wrap"] }
+iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
+image = "0.25.6"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+shellexpand = "3.1.1"
+tokio = { version = "1.45.1", features = ["fs"] }
+url = "2.5.4"
+
+
+[profile.release]
+debug = true
 </file>
 
 <file path="src/ui/state.rs">
@@ -1009,11 +1069,10 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::OpenPopup(project) => {
-            // Load video if available and not already loaded
             if let Some(file_name) = &project.meta.file {
                 let video_path = format!("{}/{}", project.path, file_name);
-                if app.should_load_video(&video_path) {
-                    app.video(&video_path); // Load the video
+                if app.should_load(&video_path) {
+                    app.load_video(&video_path);
                 }
             }
             app.popup_state = Some(project);
@@ -1024,36 +1083,11 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::LoadVideo(path) => {
-            app.video(&path);
+            app.load_video(&path);
             Task::none()
         }
     }
 }
-</file>
-
-<file path="Cargo.toml">
-[package]
-name = "papyrust"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-derive = "1.0.0"
-fast_image_resize = { version = "5.1.4", features = ["image"] }
-futures = "0.3.31"
-iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
-iced_aw = { version = "0.12.2", features = ["wrap"] }
-iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
-image = "0.25.6"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-shellexpand = "3.1.1"
-tokio = { version = "1.45.1", features = ["fs"] }
-url = "2.5.4"
-
-
-[profile.release]
-debug = true
 </file>
 
 <file path="src/main.rs">
@@ -1086,7 +1120,7 @@ pub enum Message {
     OpenPopup(Project),
     ClosePopup,
     Tick,
-    LoadVideo(String), // Added this line
+    LoadVideo(String),
 }
 
 const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
@@ -1111,7 +1145,7 @@ impl Papyrust {
         )
     }
 
-    pub fn video(&mut self, path: &str) -> Option<&Video> {
+    pub fn load_video(&mut self, path: &str) -> Option<&Video> {
         if !self.videos.contains_key(path) {
             if let Ok(url) = url::Url::parse(&format!("file://{}", path)) {
                 if let Ok(video) = Video::new(&url) {
@@ -1122,13 +1156,11 @@ impl Papyrust {
         self.videos.get(path)
     }
 
-    // Add this method to get video without mutation
-    pub fn get_video(&self, path: &str) -> Option<&Video> {
+    pub fn peek_video(&self, path: &str) -> Option<&Video> {
         self.videos.get(path)
     }
 
-    // Add this method to check if we need to load a video
-    pub fn should_load_video(&self, path: &str) -> bool {
+    pub fn should_load(&self, path: &str) -> bool {
         !self.videos.contains_key(path)
     }
 
