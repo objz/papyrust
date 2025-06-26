@@ -41,7 +41,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
     if let Some(ref project) = app.popup_state {
         Stack::new()
             .push(main_content)
-            .push(popup::build(project))
+            .push(popup::build(app, project))
             .into()
     } else {
         main_content.into()

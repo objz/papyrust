@@ -27,6 +27,7 @@ pub enum Message {
     OpenPopup(Project),
     ClosePopup,
     Tick,
+    LoadVideo(String),
 }
 
 const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
@@ -51,7 +52,7 @@ impl Papyrust {
         )
     }
 
-    pub fn video(&mut self, path: &str) -> Option<&Video> {
+    pub fn load_video(&mut self, path: &str) -> Option<&Video> {
         if !self.videos.contains_key(path) {
             if let Ok(url) = url::Url::parse(&format!("file://{}", path)) {
                 if let Ok(video) = Video::new(&url) {
@@ -60,6 +61,14 @@ impl Papyrust {
             }
         }
         self.videos.get(path)
+    }
+
+    pub fn peek_video(&self, path: &str) -> Option<&Video> {
+        self.videos.get(path)
+    }
+
+    pub fn should_load(&self, path: &str) -> bool {
+        !self.videos.contains_key(path)
     }
 
     pub fn tick(&mut self) {

@@ -34,11 +34,21 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::OpenPopup(project) => {
+            if let Some(file_name) = &project.meta.file {
+                let video_path = format!("{}/{}", project.path, file_name);
+                if app.should_load(&video_path) {
+                    app.load_video(&video_path);
+                }
+            }
             app.popup_state = Some(project);
             Task::none()
         }
         Message::ClosePopup => {
             app.popup_state = None;
+            Task::none()
+        }
+        Message::LoadVideo(path) => {
+            app.load_video(&path);
             Task::none()
         }
     }
