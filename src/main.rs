@@ -1,4 +1,5 @@
 use iced::{Element, Font, Settings, Subscription, Task};
+use library::project::Project;
 use ui::state;
 
 mod library;
@@ -18,6 +19,7 @@ pub enum Message {
     SwitchPage(Page),
     PreviewDecoded(usize, u32, u32, Vec<u8>),
     PreviewError(usize),
+    ProjectClicked(Project),
     Tick,
 }
 

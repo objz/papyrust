@@ -33,5 +33,6 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             app.tick();
             Task::none()
         }
+        _ => Task::none(),
     }
 }
