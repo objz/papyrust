@@ -1,7 +1,7 @@
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{button, text, Button, Column, Container, Row},
-    Color, Element, Length, Padding,
+    widget::{button, text, Button, Column, Container, Row, Space},
+    Background, Border, Color, Element, Length, Padding, Shadow, Vector,
 };
 use iced_video_player::VideoPlayer;
 
@@ -16,21 +16,47 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
         .on_press(Message::ClosePopup)
         .padding(Padding::from([8, 12]))
         .style(|_theme, status| {
-            let base_color = Color::from_rgba(0.8, 0.2, 0.2, 0.8);
-            let hover_color = Color::from_rgba(1.0, 0.3, 0.3, 0.9);
+            let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
+            let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
+            let border_color = Color::from_rgba(0.6, 0.6, 0.6, 0.5);
 
             button::Style {
-                background: Some(iced::Background::Color(
+                background: Some(Background::Color(
                     if matches!(status, iced::widget::button::Status::Hovered) {
-                        hover_color
+                        hover
                     } else {
-                        base_color
+                        base
                     },
                 )),
-                border: iced::Border {
-                    radius: 20.0.into(),
+                border: Border {
+                    radius: 8.0.into(),
                     width: 1.0,
-                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                    color: border_color,
+                },
+                text_color: Color::WHITE,
+                ..Default::default()
+            }
+        });
+
+    let apply_button = Button::new(text("Apply").size(16))
+        .padding(Padding::from([8, 12]))
+        .style(|_theme, status| {
+            let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
+            let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
+            let border_color = Color::from_rgba(0.6, 0.6, 0.6, 0.5);
+
+            button::Style {
+                background: Some(Background::Color(
+                    if matches!(status, iced::widget::button::Status::Hovered) {
+                        hover
+                    } else {
+                        base
+                    },
+                )),
+                border: Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: border_color,
                 },
                 text_color: Color::WHITE,
                 ..Default::default()
@@ -46,31 +72,37 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
                     ..Default::default()
                 }),
         )
-        .push(close_button)
         .align_y(Vertical::Center);
+
+    let footer_row = Row::new().spacing(10).push(close_button).push(apply_button);
+
+    let footer = Container::new(footer_row)
+        .align_x(Horizontal::Center)
+        .width(Length::Fill);
 
     let popup_content = Column::new()
         .push(header)
         .push(video_preview)
+        .push(Space::new(Length::Fill, Length::Fill))
+        .push(footer)
         .spacing(20)
-        .align_x(iced::Alignment::Center);
+        .padding(20)
+        .width(Length::Fill)
+        .align_x(Horizontal::Center);
 
     let popup = Container::new(popup_content)
         .width(Length::Fixed(800.0))
         .height(Length::Fixed(600.0))
-        .padding(30)
         .style(|_theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgba(
-                0.05, 0.05, 0.05, 0.98,
-            ))),
-            border: iced::Border {
+            background: Some(Background::Color(Color::from_rgba(0.05, 0.05, 0.05, 0.98))),
+            border: Border {
                 radius: 16.0.into(),
                 width: 2.0,
                 color: Color::from_rgba(0.6, 0.6, 0.6, 0.4),
             },
-            shadow: iced::Shadow {
+            shadow: Shadow {
                 color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                offset: iced::Vector::new(0.0, 8.0),
+                offset: Vector::new(0.0, 8.0),
                 blur_radius: 24.0,
             },
             ..Default::default()
@@ -82,9 +114,7 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgba(
-                0.0, 0.0, 0.0, 0.85,
-            ))),
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
             ..Default::default()
         })
         .align_x(Horizontal::Center)
@@ -108,17 +138,15 @@ fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Me
             .width(Length::Fixed(video_width))
             .height(Length::Fixed(video_height))
             .style(|_theme| iced::widget::container::Style {
-                background: Some(iced::Background::Color(Color::from_rgba(
-                    0.0, 0.0, 0.0, 0.95,
-                ))),
-                border: iced::Border {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.95))),
+                border: Border {
                     radius: 12.0.into(),
                     width: 2.0,
                     color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
                 },
-                shadow: iced::Shadow {
+                shadow: Shadow {
                     color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-                    offset: iced::Vector::new(0.0, 4.0),
+                    offset: Vector::new(0.0, 4.0),
                     blur_radius: 12.0,
                 },
                 ..Default::default()
@@ -148,10 +176,8 @@ fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Me
             .width(Length::Fixed(video_width))
             .height(Length::Fixed(video_height))
             .style(|_theme| iced::widget::container::Style {
-                background: Some(iced::Background::Color(Color::from_rgba(
-                    0.15, 0.15, 0.15, 0.9,
-                ))),
-                border: iced::Border {
+                background: Some(Background::Color(Color::from_rgba(0.15, 0.15, 0.15, 0.9))),
+                border: Border {
                     radius: 12.0.into(),
                     width: 2.0,
                     color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
@@ -175,10 +201,8 @@ fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Me
         .width(Length::Fixed(video_width))
         .height(Length::Fixed(video_height))
         .style(|_theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgba(
-                0.15, 0.15, 0.15, 0.9,
-            ))),
-            border: iced::Border {
+            background: Some(Background::Color(Color::from_rgba(0.15, 0.15, 0.15, 0.9))),
+            border: Border {
                 radius: 12.0.into(),
                 width: 2.0,
                 color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
