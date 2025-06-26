@@ -5,7 +5,7 @@ use iced::{
     widget::{column, container, scrollable, text},
     Element, Length,
 };
-use iced::{Alignment, Task};
+use iced::{Alignment, Padding, Task};
 use image::load_from_memory;
 use tokio::{fs, task};
 
@@ -102,6 +102,7 @@ pub fn render_item<'a>(
         Container::new(
             Column::new()
                 .align_x(Alignment::Center)
+                .padding(Padding::new(0.0).top(4.0))
                 .push(preview)
                 .push(
                     text(title)
@@ -115,16 +116,15 @@ pub fn render_item<'a>(
                 )
                 .spacing(8),
         )
-        .padding(10)
         .width(Length::Fixed(ITEM_WIDTH))
         .height(Length::Fixed(ITEM_HEIGHT)),
     )
     .width(Length::Fixed(ITEM_WIDTH))
     .height(Length::Fixed(ITEM_HEIGHT))
     .style(|_theme, status| {
-        let base_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.05);
-        let hover_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.1);
-        let border_color = iced::Color::from_rgba(0.7, 0.7, 0.7, 0.2);
+        let base_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.15);
+        let hover_color = iced::Color::from_rgba(0.5, 0.5, 0.5, 0.3);
+        let border_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.2);
 
         match status {
             iced::widget::button::Status::Hovered => iced::widget::button::Style {
