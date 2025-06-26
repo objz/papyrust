@@ -34,13 +34,14 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::OpenPopup(project) => {
+            app.popup_state = Some(project.clone());
+
             if let Some(file_name) = &project.meta.file {
                 let video_path = format!("{}/{}", project.path, file_name);
                 if app.should_load(&video_path) {
-                    app.load_video(&video_path);
+                    return Papyrust::load_video_async(video_path);
                 }
             }
-            app.popup_state = Some(project);
             Task::none()
         }
         Message::ClosePopup => {
@@ -49,6 +50,14 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
         }
         Message::LoadVideo(path) => {
             app.load_video(&path);
+            Task::none()
+        }
+        Message::VideoLoaded(path) => {
+            app.load_video(&path);
+            Task::none()
+        }
+        Message::VideoError(path, error) => {
+            eprintln!("Failed to load video {}: {}", path, error);
             Task::none()
         }
     }

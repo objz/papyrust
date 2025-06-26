@@ -28,6 +28,8 @@ pub enum Message {
     ClosePopup,
     Tick,
     LoadVideo(String),
+    VideoLoaded(String),
+    VideoError(String, String),
 }
 
 const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
@@ -61,6 +63,22 @@ impl Papyrust {
             }
         }
         self.videos.get(path)
+    }
+
+    pub fn load_video_async(path: String) -> Task<Message> {
+        Task::perform(
+            async move {
+                match url::Url::parse(&format!("file://{}", path)) {
+                    Ok(url) => match tokio::task::spawn_blocking(move || Video::new(&url)).await {
+                        Ok(Ok(_)) => Message::VideoLoaded(path),
+                        Ok(Err(e)) => Message::VideoError(path, e.to_string()),
+                        Err(e) => Message::VideoError(path, format!("Task error: {}", e)),
+                    },
+                    Err(e) => Message::VideoError(path, format!("Invalid URL: {}", e)),
+                }
+            },
+            |msg| msg,
+        )
     }
 
     pub fn peek_video(&self, path: &str) -> Option<&Video> {
