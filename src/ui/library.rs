@@ -6,7 +6,7 @@ use iced::{
     Element, Length,
 };
 use iced::{Alignment, Padding, Task};
-use image::load_from_memory;
+use image::{imageops, load_from_memory, ImageBuffer, RgbaImage};
 use tokio::{fs, task};
 
 use crate::library::{loader::Loader, project::Project};
@@ -56,7 +56,11 @@ impl Library {
                         if let Some(bytes) = buf {
                             let decode = task::spawn_blocking(move || {
                                 let img = load_from_memory(&bytes).ok()?;
-                                let rgba = img.to_rgba8();
+                                let mut rgba = img.to_rgba8();
+
+                                // Ik this is not the most efficient way to handle this, but iced forces me to do it this way
+                                rgba = Self::resize_image(rgba, PREVIEW_WIDTH as u32);
+                                rgba = Self::round_image(rgba, 4.0);
                                 let (w, h) = rgba.dimensions();
                                 Some((w, h, rgba.into_raw()))
                             })
@@ -76,6 +80,79 @@ impl Library {
                     },
                 )
             })
+    }
+
+    fn round_image(img: RgbaImage, radius: f32) -> RgbaImage {
+        let (width, height) = img.dimensions();
+        let mut rounded = img.clone();
+
+        for y in 0..height {
+            for x in 0..width {
+                let pixel = rounded.get_pixel_mut(x, y);
+
+                let should_round = {
+                    if x < radius as u32 && y < radius as u32 {
+                        let dx = radius - x as f32;
+                        let dy = radius - y as f32;
+                        dx * dx + dy * dy > radius * radius
+                    } else if x >= width - radius as u32 && y < radius as u32 {
+                        let dx = x as f32 - (width as f32 - radius - 1.0);
+                        let dy = radius - y as f32;
+                        dx * dx + dy * dy > radius * radius
+                    } else if x < radius as u32 && y >= height - radius as u32 {
+                        let dx = radius - x as f32;
+                        let dy = y as f32 - (height as f32 - radius - 1.0);
+                        dx * dx + dy * dy > radius * radius
+                    } else if x >= width - radius as u32 && y >= height - radius as u32 {
+                        let dx = x as f32 - (width as f32 - radius - 1.0);
+                        let dy = y as f32 - (height as f32 - radius - 1.0);
+                        dx * dx + dy * dy > radius * radius
+                    } else {
+                        false
+                    }
+                };
+
+                if should_round {
+                    pixel[3] = 0;
+                }
+            }
+        }
+
+        rounded
+    }
+
+    fn resize_image(img: RgbaImage, target_size: u32) -> RgbaImage {
+        let (width, height) = img.dimensions();
+
+        let scale = (target_size as f32 / width.min(height) as f32)
+            .max(target_size as f32 / width.max(height) as f32);
+        let width = (width as f32 * scale) as u32;
+        let height = (height as f32 * scale) as u32;
+
+        let resized = imageops::resize(&img, width, height, imageops::FilterType::Lanczos3);
+
+        let crop_x = if width > target_size {
+            (width - target_size) / 2
+        } else {
+            0
+        };
+        let crop_y = if height > target_size {
+            (height - target_size) / 2
+        } else {
+            0
+        };
+
+        let mut cropped = ImageBuffer::new(target_size, target_size);
+        for y in 0..target_size {
+            for x in 0..target_size {
+                if crop_x + x < width && crop_y + y < height {
+                    let pixel = resized.get_pixel(crop_x + x, crop_y + y);
+                    cropped.put_pixel(x, y, *pixel);
+                }
+            }
+        }
+
+        cropped
     }
 }
 
@@ -169,13 +246,6 @@ fn create_preview<'a>(
         .width(Length::Fixed(PREVIEW_WIDTH))
         .height(Length::Fixed(PREVIEW_HEIGHT))
         .clip(true)
-        .style(|_theme| iced::widget::container::Style {
-            border: iced::Border {
-                radius: 4.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
         .into()
     } else if project.meta.preview.is_some() {
         let dots = match app.animation_state {
