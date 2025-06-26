@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 derive = "1.0.0"
+fast_image_resize = { version = "5.1.4", features = ["image"] }
 futures = "0.3.31"
 iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
 iced_aw = { version = "0.12.2", features = ["wrap"] }

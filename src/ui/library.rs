@@ -131,12 +131,37 @@ impl Library {
         let new_width = (width as f32 * scale) as u32;
         let new_height = (height as f32 * scale) as u32;
 
-        let resized = imageops::resize(&img, new_width, new_height, imageops::FilterType::Triangle);
+        let src_image = fast_image_resize::images::Image::from_vec_u8(
+            width,
+            height,
+            img.into_raw(),
+            fast_image_resize::PixelType::U8x4,
+        )
+        .unwrap();
+
+        let mut dst_image = fast_image_resize::images::Image::new(
+            new_width,
+            new_height,
+            fast_image_resize::PixelType::U8x4,
+        );
+
+        let mut resizer = fast_image_resize::Resizer::new();
+
+        let resize_options = fast_image_resize::ResizeOptions::new().resize_alg(
+            fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Lanczos3),
+        );
+
+        resizer
+            .resize(&src_image, &mut dst_image, Some(&resize_options))
+            .unwrap();
+
+        let resized_rgba =
+            RgbaImage::from_raw(new_width, new_height, dst_image.into_vec()).unwrap();
 
         let crop_x = (new_width.saturating_sub(target_size)) / 2;
         let crop_y = (new_height.saturating_sub(target_size)) / 2;
 
-        imageops::crop_imm(&resized, crop_x, crop_y, target_size, target_size).to_image()
+        imageops::crop_imm(&resized_rgba, crop_x, crop_y, target_size, target_size).to_image()
     }
 }
 
