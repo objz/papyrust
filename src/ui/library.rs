@@ -6,7 +6,7 @@ use iced::{
     Element, Length,
 };
 use iced::{Alignment, Padding, Task};
-use image::{imageops, load_from_memory, ImageBuffer, RgbaImage};
+use image::{imageops, load_from_memory, RgbaImage};
 use tokio::{fs, task};
 
 use crate::library::{loader::Loader, project::Project};
@@ -86,73 +86,57 @@ impl Library {
         let (width, height) = img.dimensions();
         let mut rounded = img.clone();
 
-        for y in 0..height {
-            for x in 0..width {
-                let pixel = rounded.get_pixel_mut(x, y);
+        let radius_u32 = radius as u32;
+        let right_bound = width.saturating_sub(radius_u32);
+        let bottom_bound = height.saturating_sub(radius_u32);
+        let radius_sq = radius * radius;
 
-                let should_round = {
-                    if x < radius as u32 && y < radius as u32 {
-                        let dx = radius - x as f32;
-                        let dy = radius - y as f32;
-                        dx * dx + dy * dy > radius * radius
-                    } else if x >= width - radius as u32 && y < radius as u32 {
-                        let dx = x as f32 - (width as f32 - radius - 1.0);
-                        let dy = radius - y as f32;
-                        dx * dx + dy * dy > radius * radius
-                    } else if x < radius as u32 && y >= height - radius as u32 {
-                        let dx = radius - x as f32;
-                        let dy = y as f32 - (height as f32 - radius - 1.0);
-                        dx * dx + dy * dy > radius * radius
-                    } else if x >= width - radius as u32 && y >= height - radius as u32 {
-                        let dx = x as f32 - (width as f32 - radius - 1.0);
-                        let dy = y as f32 - (height as f32 - radius - 1.0);
-                        dx * dx + dy * dy > radius * radius
-                    } else {
-                        false
+        let corners = [
+            (0..radius_u32, 0..radius_u32),
+            (right_bound..width, 0..radius_u32),
+            (0..radius_u32, bottom_bound..height),
+            (right_bound..width, bottom_bound..height),
+        ];
+
+        for (x_range, y_range) in corners {
+            for y in y_range {
+                for x in x_range.clone() {
+                    let (dx, dy) = match (x < radius_u32, y < radius_u32) {
+                        (true, true) => (radius - x as f32, radius - y as f32),
+                        (false, true) => {
+                            (x as f32 - (width as f32 - radius - 1.0), radius - y as f32)
+                        }
+                        (true, false) => {
+                            (radius - x as f32, y as f32 - (height as f32 - radius - 1.0))
+                        }
+                        (false, false) => (
+                            x as f32 - (width as f32 - radius - 1.0),
+                            y as f32 - (height as f32 - radius - 1.0),
+                        ),
+                    };
+
+                    if dx * dx + dy * dy > radius_sq {
+                        rounded.get_pixel_mut(x, y)[3] = 0;
                     }
-                };
-
-                if should_round {
-                    pixel[3] = 0;
                 }
             }
         }
 
         rounded
     }
-
     fn resize_image(img: RgbaImage, target_size: u32) -> RgbaImage {
         let (width, height) = img.dimensions();
 
-        let scale = (target_size as f32 / width.min(height) as f32)
-            .max(target_size as f32 / width.max(height) as f32);
-        let width = (width as f32 * scale) as u32;
-        let height = (height as f32 * scale) as u32;
+        let scale = target_size as f32 / width.max(height) as f32;
+        let new_width = (width as f32 * scale) as u32;
+        let new_height = (height as f32 * scale) as u32;
 
-        let resized = imageops::resize(&img, width, height, imageops::FilterType::Lanczos3);
+        let resized = imageops::resize(&img, new_width, new_height, imageops::FilterType::Triangle);
 
-        let crop_x = if width > target_size {
-            (width - target_size) / 2
-        } else {
-            0
-        };
-        let crop_y = if height > target_size {
-            (height - target_size) / 2
-        } else {
-            0
-        };
+        let crop_x = (new_width.saturating_sub(target_size)) / 2;
+        let crop_y = (new_height.saturating_sub(target_size)) / 2;
 
-        let mut cropped = ImageBuffer::new(target_size, target_size);
-        for y in 0..target_size {
-            for x in 0..target_size {
-                if crop_x + x < width && crop_y + y < height {
-                    let pixel = resized.get_pixel(crop_x + x, crop_y + y);
-                    cropped.put_pixel(x, y, *pixel);
-                }
-            }
-        }
-
-        cropped
+        imageops::crop_imm(&resized, crop_x, crop_y, target_size, target_size).to_image()
     }
 }
 
