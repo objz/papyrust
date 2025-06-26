@@ -10,7 +10,7 @@ use image::{imageops, load_from_memory, RgbaImage};
 use tokio::{fs, task};
 
 use crate::library::{loader::Loader, project::Project};
-use crate::{Message, Papyrust};
+use crate::{library, Message, Papyrust};
 
 pub struct Library {
     pub projects: Vec<Project>,
@@ -32,6 +32,10 @@ impl Library {
         while let Some(result) = loader.next() {
             match result {
                 Ok(project) => {
+                    // Skip for now all non-video projects
+                    if project.meta.file_type != Some(library::project::ProjectType::Video) {
+                        continue;
+                    }
                     projects.push(project);
                     preview.push(None);
                 }
