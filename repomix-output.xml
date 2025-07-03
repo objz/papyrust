@@ -45,6 +45,14 @@ The content is organized as follows:
 
 <directory_structure>
 src/
+  daemon/
+    cache.rs
+    config.rs
+    ipc.rs
+    main.rs
+    renderer.rs
+    video.rs
+    wayland.rs
   library/
     loader.rs
     mod.rs
@@ -65,6 +73,2104 @@ flamegraph_old.svg
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/daemon/cache.rs">
+use anyhow::{anyhow, Result};
+use fast_image_resize::IntoImageView;
+use fast_image_resize::IntoImageViewMut;
+use image::{codecs::gif::GifDecoder, AnimationDecoder, Delay, RgbaImage};
+use log::{debug, info};
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::time::Duration;
+
+use crate::config::ScalingMode;
+
+#[derive(Debug, Clone)]
+pub struct GifFrame {
+    pub data: Vec<u8>,
+    pub delay: Duration,
+    pub compressed: bool,
+}
+
+pub struct GifCache {
+    cache: HashMap<String, Vec<GifFrame>>,
+    max_cache_size: usize,
+    compression_enabled: bool,
+}
+
+impl GifCache {
+    pub fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+            max_cache_size: 100 * 1024 * 1024, // 100MB default
+            compression_enabled: true,
+        }
+    }
+
+    pub fn new_with_config(max_size: usize, enable_compression: bool) -> Self {
+        Self {
+            cache: HashMap::new(),
+            max_cache_size: max_size,
+            compression_enabled: enable_compression,
+        }
+    }
+
+    pub async fn get_or_load_frames(
+        &mut self,
+        path: &str,
+        target_width: u32,
+        target_height: u32,
+        scaling_mode: ScalingMode,
+    ) -> Result<Vec<GifFrame>> {
+        let cache_key = format!(
+            "{}:{}x{}:{:?}",
+            path, target_width, target_height, scaling_mode
+        );
+
+        if let Some(frames) = self.cache.get(&cache_key) {
+            debug!("Using cached GIF frames for: {}", path);
+            return Ok(frames.clone());
+        }
+
+        info!("Loading and processing GIF: {}", path);
+        let frames = self
+            .load_and_process_gif(path, target_width, target_height, scaling_mode)
+            .await?;
+
+        // Check cache size before adding
+        if self.get_cache_size() + self.estimate_frames_size(&frames) > self.max_cache_size {
+            self.evict_oldest();
+        }
+
+        self.cache.insert(cache_key, frames.clone());
+        info!("Cached {} frames for GIF: {}", frames.len(), path);
+
+        Ok(frames)
+    }
+
+    async fn load_and_process_gif(
+        &self,
+        path: &str,
+        target_width: u32,
+        target_height: u32,
+        scaling_mode: ScalingMode,
+    ) -> Result<Vec<GifFrame>> {
+        let gif_data = tokio::fs::read(path).await?;
+        let cursor = Cursor::new(gif_data);
+
+        let decoder = GifDecoder::new(cursor)?;
+        let frames_iter = decoder.into_frames();
+
+        let mut processed_frames = Vec::new();
+
+        for (frame_index, frame_result) in frames_iter.enumerate() {
+            let frame = frame_result?;
+            let delay = Self::frame_delay_to_duration(frame.delay());
+
+            // Convert frame to RGBA
+            let rgba_image = frame.into_buffer();
+
+            // Process the frame (resize, scale, etc.)
+            let processed_image =
+                self.process_gif_frame(rgba_image, target_width, target_height, scaling_mode)?;
+
+            // Convert to raw bytes
+            let raw_data = processed_image.into_raw();
+
+            // Optionally compress the frame data
+            let frame_data = if self.compression_enabled {
+                self.compress_frame_data(&raw_data)?
+            } else {
+                raw_data
+            };
+
+            let gif_frame = GifFrame {
+                data: frame_data,
+                delay,
+                compressed: self.compression_enabled,
+            };
+
+            processed_frames.push(gif_frame);
+
+            if frame_index % 10 == 0 {
+                debug!("Processed frame {} of GIF: {}", frame_index + 1, path);
+            }
+        }
+
+        if processed_frames.is_empty() {
+            return Err(anyhow!("No frames found in GIF: {}", path));
+        }
+
+        info!(
+            "Successfully processed {} frames from GIF: {}",
+            processed_frames.len(),
+            path
+        );
+        Ok(processed_frames)
+    }
+
+    fn process_gif_frame(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+        scaling_mode: ScalingMode,
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+
+        // If already the right size, return as-is
+        if img_width == target_width && img_height == target_height {
+            return Ok(image);
+        }
+
+        match scaling_mode {
+            ScalingMode::Fill => {
+                // Scale to fill, crop excess
+                let scale_x = target_width as f64 / img_width as f64;
+                let scale_y = target_height as f64 / img_height as f64;
+                let scale = scale_x.max(scale_y);
+
+                let new_width = (img_width as f64 * scale) as u32;
+                let new_height = (img_height as f64 * scale) as u32;
+
+                let scaled = self.resize_image(image, new_width, new_height)?;
+                self.crop_center(scaled, target_width, target_height)
+            }
+            ScalingMode::Fit => {
+                // Scale to fit entirely, add letterbox if needed
+                let scale_x = target_width as f64 / img_width as f64;
+                let scale_y = target_height as f64 / img_height as f64;
+                let scale = scale_x.min(scale_y);
+
+                let new_width = (img_width as f64 * scale) as u32;
+                let new_height = (img_height as f64 * scale) as u32;
+
+                let scaled = self.resize_image(image, new_width, new_height)?;
+                self.center_on_background(scaled, target_width, target_height, [0, 0, 0, 255])
+            }
+            ScalingMode::Center => {
+                // Center without scaling
+                self.center_on_background(image, target_width, target_height, [0, 0, 0, 255])
+            }
+            ScalingMode::Tile => {
+                // Tile the image
+                self.tile_image(image, target_width, target_height)
+            }
+        }
+    }
+
+    fn resize_image(&self, image: RgbaImage, width: u32, height: u32) -> Result<RgbaImage> {
+        use fast_image_resize as fr;
+
+        let (src_width, src_height) = image.dimensions();
+
+        if src_width == width && src_height == height {
+            return Ok(image);
+        }
+
+        let src_image = fr::images::Image::from_vec_u8(
+            src_width,
+            src_height,
+            image.into_raw(),
+            fr::PixelType::U8x4,
+        )?;
+
+        let mut dst_image = fr::images::Image::new(width, height, fr::PixelType::U8x4);
+
+        let mut resizer = fr::Resizer::new();
+        resizer.resize(&src_image, &mut dst_image, &fr::ResizeOptions::default())?;
+
+        let raw_pixels = dst_image.into_vec();
+        Ok(RgbaImage::from_raw(width, height, raw_pixels)
+            .ok_or_else(|| anyhow!("Failed to create image from resized data"))?)
+    }
+
+    fn crop_center(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+
+        if img_width == target_width && img_height == target_height {
+            return Ok(image);
+        }
+
+        let x_offset = (img_width.saturating_sub(target_width)) / 2;
+        let y_offset = (img_height.saturating_sub(target_height)) / 2;
+
+        let mut result = RgbaImage::new(target_width, target_height);
+
+        for y in 0..target_height {
+            for x in 0..target_width {
+                let src_x = x + x_offset;
+                let src_y = y + y_offset;
+
+                if src_x < img_width && src_y < img_height {
+                    let pixel = image.get_pixel(src_x, src_y);
+                    result.put_pixel(x, y, *pixel);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn center_on_background(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+        bg_color: [u8; 4],
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+        let mut result = RgbaImage::new(target_width, target_height);
+
+        // Fill with background color
+        for pixel in result.pixels_mut() {
+            *pixel = image::Rgba(bg_color);
+        }
+
+        // Center the image
+        let x_offset = (target_width.saturating_sub(img_width)) / 2;
+        let y_offset = (target_height.saturating_sub(img_height)) / 2;
+
+        for y in 0..img_height {
+            for x in 0..img_width {
+                let dst_x = x + x_offset;
+                let dst_y = y + y_offset;
+
+                if dst_x < target_width && dst_y < target_height {
+                    let pixel = image.get_pixel(x, y);
+                    result.put_pixel(dst_x, dst_y, *pixel);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn tile_image(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+        let mut result = RgbaImage::new(target_width, target_height);
+
+        for y in 0..target_width {
+            for x in 0..target_width {
+                let src_x = x % img_width;
+                let src_y = y % img_height;
+                let pixel = image.get_pixel(src_x, src_y);
+                result.put_pixel(x, y, *pixel);
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn compress_frame_data(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let compressed = lz4_flex::compress_prepend_size(data);
+        Ok(compressed)
+    }
+
+    pub fn decompress_frame_data(&self, compressed_data: &[u8]) -> Result<Vec<u8>> {
+        let decompressed = lz4_flex::decompress_size_prepended(compressed_data)?;
+        Ok(decompressed)
+    }
+
+    pub fn get_frame_data(&self, frame: &GifFrame) -> Result<Vec<u8>> {
+        if frame.compressed {
+            self.decompress_frame_data(&frame.data)
+        } else {
+            Ok(frame.data.clone())
+        }
+    }
+
+    fn frame_delay_to_duration(delay: Delay) -> Duration {
+        let (num, denom) = delay.numer_denom_ms();
+        let ms = (num as f64 / denom as f64 * 1000.0) as u64;
+        Duration::from_millis(ms.max(10)) // Minimum 10ms delay
+    }
+
+    fn get_cache_size(&self) -> usize {
+        self.cache
+            .values()
+            .map(|frames| self.estimate_frames_size(frames))
+            .sum()
+    }
+
+    fn estimate_frames_size(&self, frames: &[GifFrame]) -> usize {
+        frames.iter().map(|frame| frame.data.len()).sum()
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some(key) = self.cache.keys().next().cloned() {
+            self.cache.remove(&key);
+            debug!("Evicted cached GIF frames for: {}", key);
+        }
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+        info!("Cleared GIF frame cache");
+    }
+
+    pub fn set_max_cache_size(&mut self, size: usize) {
+        self.max_cache_size = size;
+
+        // Evict if current cache is too large
+        while self.get_cache_size() > self.max_cache_size && !self.cache.is_empty() {
+            self.evict_oldest();
+        }
+    }
+
+    pub fn cache_stats(&self) -> (usize, usize, usize) {
+        let entries = self.cache.len();
+        let size = self.get_cache_size();
+        let total_frames: usize = self.cache.values().map(|frames| frames.len()).sum();
+
+        (entries, size, total_frames)
+    }
+}
+
+impl Default for GifCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+</file>
+
+<file path="src/daemon/config.rs">
+use anyhow::Result;
+use std::path::PathBuf;
+
+use crate::Args;
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub socket_path: PathBuf,
+    pub default_mode: ScalingMode,
+    pub transitions_enabled: bool,
+    pub transition_duration: u64,
+    pub debug: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalingMode {
+    Fill,   // Scale to fill, crop excess
+    Fit,    // Scale to fit, add letterbox
+    Center, // Center without scaling
+    Tile,   // Tile the image
+}
+
+impl Config {
+    pub fn new(args: Args) -> Result<Self> {
+        let socket_path = if let Some(path) = args.socket {
+            PathBuf::from(path)
+        } else {
+            let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                .or_else(|_| std::env::var("TMPDIR"))
+                .unwrap_or_else(|_| "/tmp".to_string());
+
+            let display =
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+
+            PathBuf::from(runtime_dir).join(format!("papyrust-{}.socket", display))
+        };
+
+        let default_mode = match args.mode.as_str() {
+            "fill" => ScalingMode::Fill,
+            "fit" => ScalingMode::Fit,
+            "center" => ScalingMode::Center,
+            "tile" => ScalingMode::Tile,
+            _ => ScalingMode::Fill,
+        };
+
+        Ok(Config {
+            socket_path,
+            default_mode,
+            transitions_enabled: !args.no_transitions,
+            transition_duration: args.transition_duration,
+            debug: args.debug,
+        })
+    }
+}
+</file>
+
+<file path="src/daemon/ipc.rs">
+use anyhow::Result;
+use log::{debug, error, info};
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use crate::config::{Config, ScalingMode};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "cmd")]
+pub enum Command {
+    #[serde(rename = "set_image")]
+    SetImage {
+        path: String,
+        output: String,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    #[serde(rename = "set_video")]
+    SetVideo {
+        path: String,
+        output: String,
+        #[serde(default = "default_true")]
+        r#loop: bool,
+        #[serde(default = "default_false")]
+        audio: bool,
+    },
+    #[serde(rename = "set_gif")]
+    SetGif {
+        path: String,
+        output: String,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    #[serde(rename = "query")]
+    Query { output: String },
+    #[serde(rename = "stop")]
+    Stop { output: String },
+    #[serde(rename = "exit")]
+    Exit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Response {
+    pub success: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+
+pub async fn start_server(
+    config: &Config,
+    wayland_sender: mpsc::Sender<WaylandCommand>,
+) -> Result<JoinHandle<Result<()>>> {
+    let socket_path = config.socket_path.clone();
+
+    // Remove existing socket file if it exists
+    if socket_path.exists() {
+        tokio::fs::remove_file(&socket_path).await?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)?;
+    info!("IPC server listening on {}", socket_path.display());
+
+    let handle = tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let sender = wayland_sender.clone();
+                    tokio::spawn(handle_client(stream, sender));
+                }
+                Err(e) => {
+                    error!("Failed to accept connection: {}", e);
+                }
+            }
+        }
+    });
+
+    Ok(handle)
+}
+
+async fn handle_client(
+    stream: UnixStream,
+    wayland_sender: mpsc::Sender<WaylandCommand>,
+) -> Result<()> {
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                let response = match serde_json::from_str::<Command>(&line.trim()) {
+                    Ok(command) => {
+                        debug!("Received command: {:?}", command);
+                        handle_command(command, &wayland_sender).await
+                    }
+                    Err(e) => Response {
+                        success: false,
+                        message: format!("Invalid JSON: {}", e),
+                        data: None,
+                    },
+                };
+
+                let response_json = serde_json::to_string(&response)?;
+                writer.write_all(response_json.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+            }
+            Err(e) => {
+                error!("Failed to read from client: {}", e);
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_command(
+    command: Command,
+    wayland_sender: &mpsc::Sender<WaylandCommand>,
+) -> Response {
+    use Command::*;
+
+    match command {
+        SetImage { path, output, mode } => {
+            let scaling_mode = parse_scaling_mode(mode.as_deref());
+            let wayland_cmd = WaylandCommand::SetImage {
+                path,
+                output,
+                mode: scaling_mode,
+            };
+
+            send_wayland_command(wayland_sender, wayland_cmd).await
+        }
+        SetVideo {
+            path,
+            output,
+            r#loop,
+            audio,
+        } => {
+            let wayland_cmd = WaylandCommand::SetVideo {
+                path,
+                output,
+                r#loop,
+                audio,
+            };
+
+            send_wayland_command(wayland_sender, wayland_cmd).await
+        }
+        SetGif { path, output, mode } => {
+            let scaling_mode = parse_scaling_mode(mode.as_deref());
+            let wayland_cmd = WaylandCommand::SetGif {
+                path,
+                output,
+                mode: scaling_mode,
+            };
+
+            send_wayland_command(wayland_sender, wayland_cmd).await
+        }
+        Query { output } => {
+            let wayland_cmd = WaylandCommand::Query { output };
+            send_wayland_command(wayland_sender, wayland_cmd).await
+        }
+        Stop { output } => {
+            let wayland_cmd = WaylandCommand::Stop { output };
+            send_wayland_command(wayland_sender, wayland_cmd).await
+        }
+        Exit => {
+            info!("Received exit command");
+            std::process::exit(0);
+        }
+    }
+}
+
+async fn send_wayland_command(
+    sender: &mpsc::Sender<WaylandCommand>,
+    command: WaylandCommand,
+) -> Response {
+    match sender.send(command).await {
+        Ok(_) => Response {
+            success: true,
+            message: "Command sent successfully".to_string(),
+            data: None,
+        },
+        Err(e) => Response {
+            success: false,
+            message: format!("Failed to send command: {}", e),
+            data: None,
+        },
+    }
+}
+
+fn parse_scaling_mode(mode: Option<&str>) -> ScalingMode {
+    match mode {
+        Some("fill") => ScalingMode::Fill,
+        Some("fit") => ScalingMode::Fit,
+        Some("center") => ScalingMode::Center,
+        Some("tile") => ScalingMode::Tile,
+        _ => ScalingMode::Fill,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum WaylandCommand {
+    SetImage {
+        path: String,
+        output: String,
+        mode: ScalingMode,
+    },
+    SetVideo {
+        path: String,
+        output: String,
+        r#loop: bool,
+        audio: bool,
+    },
+    SetGif {
+        path: String,
+        output: String,
+        mode: ScalingMode,
+    },
+    Query {
+        output: String,
+    },
+    Stop {
+        output: String,
+    },
+}
+</file>
+
+<file path="src/daemon/renderer.rs">
+use anyhow::{anyhow, Result};
+use fast_image_resize::IntoImageView;
+use fast_image_resize::IntoImageViewMut;
+use image::RgbaImage;
+use log::{debug, info};
+use memmap2::MmapMut;
+use std::collections::HashMap;
+use std::os::fd::{AsFd, BorrowedFd};
+use std::sync::Arc;
+use tempfile::NamedTempFile;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use wayland_client::{
+    protocol::{wl_buffer, wl_shm, wl_surface},
+    QueueHandle,
+};
+
+use crate::{
+    cache::GifCache,
+    config::{Config, ScalingMode},
+    video::VideoPlayer,
+    wayland::WaylandClient,
+};
+
+pub struct Renderer {
+    config: Config,
+    gif_cache: Arc<Mutex<GifCache>>,
+    video_players: Arc<Mutex<HashMap<String, VideoPlayer>>>,
+    animation_handles: HashMap<String, JoinHandle<()>>,
+}
+
+impl Renderer {
+    pub fn new(config: Config) -> Result<Self> {
+        Ok(Self {
+            config,
+            gif_cache: Arc::new(Mutex::new(GifCache::new())),
+            video_players: Arc::new(Mutex::new(HashMap::new())),
+            animation_handles: HashMap::new(),
+        })
+    }
+
+    pub async fn render_image(
+        &mut self,
+        path: &str,
+        width: u32,
+        height: u32,
+        mode: ScalingMode,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<WaylandClient>,
+    ) -> Result<wl_buffer::WlBuffer> {
+        let image_data = tokio::fs::read(path).await?;
+        let image = image::load_from_memory(&image_data)?;
+        let rgba_image = image.to_rgba8();
+
+        let processed_image = self.process_image(rgba_image, width, height, mode)?;
+        self.create_buffer_from_image(processed_image, shm, qh)
+            .await
+    }
+
+    pub async fn start_gif(
+        &mut self,
+        path: &str,
+        output: &str,
+        width: u32,
+        height: u32,
+        mode: ScalingMode,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<WaylandClient>,
+        surface: wl_surface::WlSurface,
+    ) -> Result<()> {
+        // Stop any existing animation for this output
+        self.stop_content(output);
+
+        // Load and cache GIF frames
+        let frames = {
+            let mut cache = self.gif_cache.lock().await;
+            cache.get_or_load_frames(path, width, height, mode).await?
+        };
+
+        info!(
+            "Starting GIF animation with {} frames on output {}",
+            frames.len(),
+            output
+        );
+
+        // For now, just set the first frame
+        if let Some(first_frame) = frames.first() {
+            let frame_data = {
+                let cache = self.gif_cache.lock().await;
+                cache.get_frame_data(first_frame)?
+            };
+
+            let buffer =
+                Self::create_buffer_from_frame_data(&frame_data, width, height, shm, qh).await?;
+
+            surface.attach(Some(&buffer), 0, 0);
+            surface.damage_buffer(0, 0, width as i32, height as i32);
+            surface.commit();
+        }
+
+        Ok(())
+    }
+
+    pub async fn start_video(
+        &mut self,
+        path: &str,
+        output: &str,
+        width: u32,
+        height: u32,
+        loop_video: bool,
+        audio: bool,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<WaylandClient>,
+        surface: wl_surface::WlSurface,
+    ) -> Result<()> {
+        // Stop any existing content for this output
+        self.stop_content(output);
+
+        // Create video player
+        let video_player = VideoPlayer::new(path, width, height, loop_video, audio).await?;
+
+        info!("Starting video playback on output {}", output);
+
+        // Store the video player
+        {
+            let mut players = self.video_players.lock().await;
+            players.insert(output.to_string(), video_player);
+        }
+
+        // For now, just create a black buffer as placeholder
+        let buffer = self
+            .create_solid_color_buffer(width, height, [0, 0, 0, 255], shm, qh)
+            .await?;
+
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+
+        Ok(())
+    }
+
+    pub fn stop_content(&mut self, output: &str) {
+        if let Some(handle) = self.animation_handles.remove(output) {
+            handle.abort();
+            debug!("Stopped animation for output: {}", output);
+        }
+
+        // Remove video player if exists
+        let video_players = self.video_players.clone();
+        let output_name = output.to_string();
+        tokio::spawn(async move {
+            let mut players = video_players.lock().await;
+            if let Some(mut player) = players.remove(&output_name) {
+                player.stop().await;
+                debug!("Stopped video player for output: {}", output_name);
+            }
+        });
+    }
+
+    pub async fn create_solid_color_buffer(
+        &mut self,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<WaylandClient>,
+    ) -> Result<wl_buffer::WlBuffer> {
+        let mut image = RgbaImage::new(width, height);
+        for pixel in image.pixels_mut() {
+            *pixel = image::Rgba(color);
+        }
+
+        self.create_buffer_from_image(image, shm, qh).await
+    }
+
+    fn process_image(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+        mode: ScalingMode,
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+
+        match mode {
+            ScalingMode::Fill => {
+                // Scale to fill, crop excess
+                let scale_x = target_width as f64 / img_width as f64;
+                let scale_y = target_height as f64 / img_height as f64;
+                let scale = scale_x.max(scale_y);
+
+                let new_width = (img_width as f64 * scale) as u32;
+                let new_height = (img_height as f64 * scale) as u32;
+
+                let scaled = self.resize_image(image, new_width, new_height)?;
+
+                // Crop to target size
+                self.crop_center(scaled, target_width, target_height)
+            }
+            ScalingMode::Fit => {
+                // Scale to fit entirely, add letterbox if needed
+                let scale_x = target_width as f64 / img_width as f64;
+                let scale_y = target_height as f64 / img_height as f64;
+                let scale = scale_x.min(scale_y);
+
+                let new_width = (img_width as f64 * scale) as u32;
+                let new_height = (img_height as f64 * scale) as u32;
+
+                let scaled = self.resize_image(image, new_width, new_height)?;
+
+                // Center on black background
+                self.center_on_background(scaled, target_width, target_height, [0, 0, 0, 255])
+            }
+            ScalingMode::Center => {
+                // Center without scaling
+                if img_width == target_width && img_height == target_height {
+                    Ok(image)
+                } else {
+                    self.center_on_background(image, target_width, target_height, [0, 0, 0, 255])
+                }
+            }
+            ScalingMode::Tile => {
+                // Tile the image
+                self.tile_image(image, target_width, target_height)
+            }
+        }
+    }
+
+    fn resize_image(&self, image: RgbaImage, width: u32, height: u32) -> Result<RgbaImage> {
+        use fast_image_resize as fr;
+
+        let (src_width, src_height) = image.dimensions();
+
+        if src_width == width && src_height == height {
+            return Ok(image);
+        }
+
+        let src_image = fr::images::Image::from_vec_u8(
+            src_width,
+            src_height,
+            image.into_raw(),
+            fr::PixelType::U8x4,
+        )?;
+
+        let mut dst_image = fr::images::Image::new(width, height, fr::PixelType::U8x4);
+
+        let mut resizer = fr::Resizer::new();
+        resizer.resize(&src_image, &mut dst_image, &fr::ResizeOptions::default())?;
+
+        let raw_pixels = dst_image.into_vec();
+        Ok(RgbaImage::from_raw(width, height, raw_pixels)
+            .ok_or_else(|| anyhow!("Failed to create image from resized data"))?)
+    }
+
+    fn crop_center(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+
+        if img_width == target_width && img_height == target_height {
+            return Ok(image);
+        }
+
+        let x_offset = (img_width.saturating_sub(target_width)) / 2;
+        let y_offset = (img_height.saturating_sub(target_height)) / 2;
+
+        let mut result = RgbaImage::new(target_width, target_height);
+
+        for y in 0..target_height {
+            for x in 0..target_width {
+                let src_x = x + x_offset;
+                let src_y = y + y_offset;
+
+                if src_x < img_width && src_y < img_height {
+                    let pixel = image.get_pixel(src_x, src_y);
+                    result.put_pixel(x, y, *pixel);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn center_on_background(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+        bg_color: [u8; 4],
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+        let mut result = RgbaImage::new(target_width, target_height);
+
+        // Fill with background color
+        for pixel in result.pixels_mut() {
+            *pixel = image::Rgba(bg_color);
+        }
+
+        // Center the image
+        let x_offset = (target_width.saturating_sub(img_width)) / 2;
+        let y_offset = (target_height.saturating_sub(img_height)) / 2;
+
+        for y in 0..img_height {
+            for x in 0..img_width {
+                let dst_x = x + x_offset;
+                let dst_y = y + y_offset;
+
+                if dst_x < target_width && dst_y < target_height {
+                    let pixel = image.get_pixel(x, y);
+                    result.put_pixel(dst_x, dst_y, *pixel);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn tile_image(
+        &self,
+        image: RgbaImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<RgbaImage> {
+        let (img_width, img_height) = image.dimensions();
+        let mut result = RgbaImage::new(target_width, target_height);
+
+        for y in 0..target_height {
+            for x in 0..target_width {
+                let src_x = x % img_width;
+                let src_y = y % img_height;
+                let pixel = image.get_pixel(src_x, src_y);
+                result.put_pixel(x, y, *pixel);
+            }
+        }
+
+        Ok(result)
+    }
+
+    async fn create_buffer_from_image(
+        &mut self,
+        image: RgbaImage,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<WaylandClient>,
+    ) -> Result<wl_buffer::WlBuffer> {
+        let (width, height) = image.dimensions();
+        let stride = width * 4; // 4 bytes per pixel (RGBA)
+        let size = stride * height;
+
+        // Create a temporary file for shared memory
+        let temp_file = NamedTempFile::new()?;
+        temp_file.as_file().set_len(size as u64)?;
+
+        // Create memory map
+        let mut mmap = unsafe { MmapMut::map_mut(temp_file.as_file())? };
+
+        // Convert RGBA to ARGB (Wayland expects ARGB)
+        let image_data = image.into_raw();
+        for i in (0..image_data.len()).step_by(4) {
+            let r = image_data[i];
+            let g = image_data[i + 1];
+            let b = image_data[i + 2];
+            let a = image_data[i + 3];
+
+            // ARGB format
+            mmap[i] = b; // Blue
+            mmap[i + 1] = g; // Green
+            mmap[i + 2] = r; // Red
+            mmap[i + 3] = a; // Alpha
+        }
+
+        // Flush memory map
+        mmap.flush()?;
+
+        // Create Wayland shared memory pool
+        let fd: BorrowedFd = temp_file.as_file().as_fd();
+        let pool = shm.create_pool(fd, size as i32, qh, ());
+
+        // Create buffer from pool
+        let buffer = pool.create_buffer(
+            0, // offset
+            width as i32,
+            height as i32,
+            stride as i32,
+            wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+
+        Ok(buffer)
+    }
+
+    async fn create_buffer_from_frame_data(
+        data: &[u8],
+        width: u32,
+        height: u32,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<WaylandClient>,
+    ) -> Result<wl_buffer::WlBuffer> {
+        let stride = width * 4;
+        let size = stride * height;
+
+        // Create a temporary file for shared memory
+        let temp_file = NamedTempFile::new()?;
+        temp_file.as_file().set_len(size as u64)?;
+
+        // Create memory map
+        let mut mmap = unsafe { MmapMut::map_mut(temp_file.as_file())? };
+
+        // Copy frame data (assuming it's already in RGBA format)
+        // Convert RGBA to ARGB for Wayland
+        for i in (0..data.len().min(mmap.len())).step_by(4) {
+            let r = data[i];
+            let g = data[i + 1];
+            let b = data[i + 2];
+            let a = data[i + 3];
+
+            // ARGB format
+            mmap[i] = b; // Blue
+            mmap[i + 1] = g; // Green
+            mmap[i + 2] = r; // Red
+            mmap[i + 3] = a; // Alpha
+        }
+
+        // Flush memory map
+        mmap.flush()?;
+
+        // Create Wayland shared memory pool
+        let fd: BorrowedFd = temp_file.as_file().as_fd();
+        let pool = shm.create_pool(fd, size as i32, qh, ());
+
+        // Create buffer from pool
+        let buffer = pool.create_buffer(
+            0, // offset
+            width as i32,
+            height as i32,
+            stride as i32,
+            wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+
+        Ok(buffer)
+    }
+}
+</file>
+
+<file path="src/daemon/video.rs">
+use anyhow::{anyhow, Result};
+use log::{debug, info, warn};
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int, c_void};
+use std::ptr;
+
+// Note: In a real implementation, you'd use the libmpv-sys crate
+// This is a simplified version for demonstration
+#[repr(C)]
+struct MpvHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct MpvRenderContext {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct MpvRenderParam {
+    param_type: c_int,
+    data: *mut c_void,
+}
+
+// External C functions (in reality, these would come from libmpv-sys)
+unsafe extern "C" {
+    fn mpv_create() -> *mut MpvHandle;
+    fn mpv_destroy(ctx: *mut MpvHandle);
+    fn mpv_initialize(ctx: *mut MpvHandle) -> c_int;
+    fn mpv_set_option_string(
+        ctx: *mut MpvHandle,
+        name: *const c_char,
+        data: *const c_char,
+    ) -> c_int;
+    fn mpv_set_property_string(
+        ctx: *mut MpvHandle,
+        name: *const c_char,
+        data: *const c_char,
+    ) -> c_int;
+    fn mpv_command_string(ctx: *mut MpvHandle, args: *const c_char) -> c_int;
+    fn mpv_render_context_create(
+        res: *mut *mut MpvRenderContext,
+        mpv: *mut MpvHandle,
+        params: *mut MpvRenderParam,
+    ) -> c_int;
+    fn mpv_render_context_destroy(ctx: *mut MpvRenderContext);
+    fn mpv_render_context_render(ctx: *mut MpvRenderContext, params: *mut MpvRenderParam) -> c_int;
+    fn mpv_render_context_update(ctx: *mut MpvRenderContext) -> u64;
+}
+
+const MPV_RENDER_PARAM_SW_SIZE: c_int = 1;
+const MPV_RENDER_PARAM_SW_FORMAT: c_int = 2;
+const MPV_RENDER_PARAM_SW_STRIDE: c_int = 3;
+const MPV_RENDER_PARAM_SW_POINTER: c_int = 4;
+const MPV_RENDER_PARAM_API_TYPE: c_int = 5;
+const MPV_RENDER_PARAM_INVALID: c_int = 0;
+
+pub struct VideoPlayer {
+    mpv_handle: *mut MpvHandle,
+    render_context: *mut MpvRenderContext,
+    width: u32,
+    height: u32,
+    frame_buffer: Vec<u8>,
+    is_playing: bool,
+    path: String,
+}
+
+unsafe impl Send for VideoPlayer {}
+unsafe impl Sync for VideoPlayer {}
+
+impl VideoPlayer {
+    pub async fn new(
+        path: &str,
+        width: u32,
+        height: u32,
+        loop_video: bool,
+        audio: bool,
+    ) -> Result<Self> {
+        unsafe {
+            let mpv_handle = mpv_create();
+            if mpv_handle.is_null() {
+                return Err(anyhow!("Failed to create MPV context"));
+            }
+
+            // Set MPV options before initialization
+            let audio_option = if audio { "yes" } else { "no" };
+            Self::set_mpv_option(mpv_handle, "audio", audio_option)?;
+            Self::set_mpv_option(mpv_handle, "vo", "libmpv")?;
+            Self::set_mpv_option(mpv_handle, "hwdec", "auto")?;
+            Self::set_mpv_option(mpv_handle, "keep-open", "yes")?;
+
+            if loop_video {
+                Self::set_mpv_option(mpv_handle, "loop", "inf")?;
+            }
+
+            // Initialize MPV
+            let ret = mpv_initialize(mpv_handle);
+            if ret < 0 {
+                mpv_destroy(mpv_handle);
+                return Err(anyhow!("Failed to initialize MPV: error code {}", ret));
+            }
+
+            // Create render context for software rendering
+            let mut render_context = ptr::null_mut();
+            let api_type = CString::new("sw")?;
+            let mut params = [
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_API_TYPE,
+                    data: api_type.as_ptr() as *mut c_void,
+                },
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_INVALID,
+                    data: ptr::null_mut(),
+                },
+            ];
+
+            let ret =
+                mpv_render_context_create(&mut render_context, mpv_handle, params.as_mut_ptr());
+            if ret < 0 {
+                mpv_destroy(mpv_handle);
+                return Err(anyhow!(
+                    "Failed to create render context: error code {}",
+                    ret
+                ));
+            }
+
+            let frame_buffer = vec![0u8; (width * height * 4) as usize];
+
+            let mut player = Self {
+                mpv_handle,
+                render_context,
+                width,
+                height,
+                frame_buffer,
+                is_playing: false,
+                path: path.to_string(),
+            };
+
+            // Load the video file
+            player.load_file(path).await?;
+
+            Ok(player)
+        }
+    }
+
+    pub async fn load_file(&mut self, path: &str) -> Result<()> {
+        let command = format!("loadfile \"{}\"", path);
+        let command_cstr = CString::new(command)?;
+
+        unsafe {
+            let ret = mpv_command_string(self.mpv_handle, command_cstr.as_ptr());
+            if ret < 0 {
+                return Err(anyhow!("Failed to load file {}: error code {}", path, ret));
+            }
+        }
+
+        self.is_playing = true;
+        info!("Loaded video file: {}", path);
+        Ok(())
+    }
+
+    pub async fn get_next_frame(&mut self) -> Result<Option<Vec<u8>>> {
+        if !self.is_playing {
+            return Ok(None);
+        }
+
+        unsafe {
+            // Check if update is needed
+            let update_flag = mpv_render_context_update(self.render_context);
+            if update_flag == 0 {
+                // No new frame available, return previous frame or None
+                tokio::time::sleep(std::time::Duration::from_millis(16)).await; // ~60 FPS
+                return Ok(Some(self.frame_buffer.clone()));
+            }
+
+            // Render frame to software buffer
+            let size = [self.width as i32, self.height as i32];
+            let stride = (self.width * 4) as i32;
+            let format = CString::new("rgba")?;
+
+            let mut params = [
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_SW_SIZE,
+                    data: size.as_ptr() as *mut c_void,
+                },
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_SW_FORMAT,
+                    data: format.as_ptr() as *mut c_void,
+                },
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_SW_STRIDE,
+                    data: &stride as *const i32 as *mut c_void,
+                },
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_SW_POINTER,
+                    data: self.frame_buffer.as_mut_ptr() as *mut c_void,
+                },
+                MpvRenderParam {
+                    param_type: MPV_RENDER_PARAM_INVALID,
+                    data: ptr::null_mut(),
+                },
+            ];
+
+            let ret = mpv_render_context_render(self.render_context, params.as_mut_ptr());
+            if ret < 0 {
+                warn!("Failed to render frame: error code {}", ret);
+                return Ok(None);
+            }
+
+            Ok(Some(self.frame_buffer.clone()))
+        }
+    }
+
+    pub async fn stop(&mut self) {
+        self.is_playing = false;
+
+        unsafe {
+            let stop_cmd = CString::new("stop").unwrap();
+            mpv_command_string(self.mpv_handle, stop_cmd.as_ptr());
+        }
+
+        debug!("Stopped video playback for: {}", self.path);
+    }
+
+    pub async fn pause(&mut self) -> Result<()> {
+        unsafe {
+            Self::set_mpv_property(self.mpv_handle, "pause", "yes")?;
+        }
+        debug!("Paused video: {}", self.path);
+        Ok(())
+    }
+
+    pub async fn resume(&mut self) -> Result<()> {
+        unsafe {
+            Self::set_mpv_property(self.mpv_handle, "pause", "no")?;
+        }
+        debug!("Resumed video: {}", self.path);
+        Ok(())
+    }
+
+    pub async fn seek(&mut self, position: f64) -> Result<()> {
+        let command = format!("seek {}", position);
+        let command_cstr = CString::new(command)?;
+
+        unsafe {
+            let ret = mpv_command_string(self.mpv_handle, command_cstr.as_ptr());
+            if ret < 0 {
+                return Err(anyhow!(
+                    "Failed to seek to {}: error code {}",
+                    position,
+                    ret
+                ));
+            }
+        }
+
+        debug!("Seeked to position {} in video: {}", position, self.path);
+        Ok(())
+    }
+
+    pub fn get_dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.is_playing
+    }
+
+    pub fn get_path(&self) -> &str {
+        &self.path
+    }
+
+    unsafe fn set_mpv_option(handle: *mut MpvHandle, name: &str, value: &str) -> Result<()> {
+        let name_cstr = CString::new(name)?;
+        let value_cstr = CString::new(value)?;
+
+        unsafe {
+            let ret = mpv_set_option_string(handle, name_cstr.as_ptr(), value_cstr.as_ptr());
+            if ret < 0 {
+                return Err(anyhow!(
+                    "Failed to set MPV option {}: error code {}",
+                    name,
+                    ret
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    unsafe fn set_mpv_property(handle: *mut MpvHandle, name: &str, value: &str) -> Result<()> {
+        let name_cstr = CString::new(name)?;
+        let value_cstr = CString::new(value)?;
+
+        unsafe {
+            let ret = mpv_set_property_string(handle, name_cstr.as_ptr(), value_cstr.as_ptr());
+            if ret < 0 {
+                return Err(anyhow!(
+                    "Failed to set MPV property {}: error code {}",
+                    name,
+                    ret
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for VideoPlayer {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.render_context.is_null() {
+                mpv_render_context_destroy(self.render_context);
+                self.render_context = ptr::null_mut();
+            }
+            if !self.mpv_handle.is_null() {
+                mpv_destroy(self.mpv_handle);
+                self.mpv_handle = ptr::null_mut();
+            }
+        }
+        debug!("Destroyed video player for: {}", self.path);
+    }
+}
+
+// Additional utility functions for video management
+impl VideoPlayer {
+    pub async fn get_video_info(&self) -> Result<VideoInfo> {
+        // In a real implementation, you'd query MPV properties
+        // This is a simplified version
+        Ok(VideoInfo {
+            width: self.width,
+            height: self.height,
+            duration: 0.0, // Would query from MPV
+            fps: 30.0,     // Would query from MPV
+            path: self.path.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VideoInfo {
+    pub width: u32,
+    pub height: u32,
+    pub duration: f64,
+    pub fps: f64,
+    pub path: String,
+}
+</file>
+
+<file path="src/daemon/wayland.rs">
+use anyhow::Result;
+use log::{error, info};
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState},
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
+    output::{OutputHandler, OutputState},
+    registry::{ProvidesRegistryState, RegistryState},
+    registry_handlers,
+    shell::wlr_layer::{
+        Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+    },
+    shm::{Shm, ShmHandler},
+};
+use std::collections::HashMap;
+use tokio::sync::mpsc;
+use wayland_client::{
+    globals::registry_queue_init,
+    protocol::{wl_buffer, wl_output, wl_shm_pool, wl_surface},
+    Connection, QueueHandle,
+};
+
+use crate::{config::Config, ipc::WaylandCommand, renderer::Renderer};
+
+pub struct WaylandClient {
+    conn: Connection,
+    registry_state: RegistryState,
+    output_state: OutputState,
+    compositor_state: CompositorState,
+    shm: Shm,
+    layer_shell: LayerShell,
+    outputs: HashMap<String, OutputInfo>,
+    surfaces: HashMap<String, SurfaceInfo>,
+    renderer: Renderer,
+    command_receiver: mpsc::Receiver<WaylandCommand>,
+    command_sender: mpsc::Sender<WaylandCommand>,
+}
+
+#[derive(Debug, Clone)]
+struct OutputInfo {
+    output: wl_output::WlOutput,
+    name: String,
+    width: i32,
+    height: i32,
+    scale: i32,
+}
+
+#[derive(Debug)]
+struct SurfaceInfo {
+    surface: wl_surface::WlSurface,
+    layer_surface: LayerSurface,
+    width: u32,
+    height: u32,
+    current_content: Option<String>,
+}
+
+impl WaylandClient {
+    pub async fn new(config: &Config) -> Result<Self> {
+        let conn = Connection::connect_to_env()?;
+        let (globals, mut event_queue) = registry_queue_init(&conn)?;
+        let qh = event_queue.handle();
+
+        let registry_state = RegistryState::new(&globals);
+        let output_state = OutputState::new(&globals, &qh);
+        let compositor_state = CompositorState::bind(&globals, &qh)?;
+        let shm = Shm::bind(&globals, &qh)?;
+        let layer_shell = LayerShell::bind(&globals, &qh)?;
+
+        let renderer = Renderer::new(config.clone())?;
+        let (command_sender, command_receiver) = mpsc::channel(32);
+
+        let mut client = Self {
+            conn,
+            registry_state,
+            output_state,
+            compositor_state,
+            shm,
+            layer_shell,
+            outputs: HashMap::new(),
+            surfaces: HashMap::new(),
+            renderer,
+            command_receiver,
+            command_sender,
+        };
+
+        // Process initial events to discover outputs
+        event_queue.blocking_dispatch(&mut client)?;
+
+        // Create surfaces for all outputs
+        let output_names: Vec<String> = client.outputs.keys().cloned().collect();
+        for name in output_names {
+            if let Some(output_info) = client.outputs.get(&name) {
+                let output_info = output_info.clone();
+                client.create_surface_for_output(&name, &output_info, &qh)?;
+            }
+        }
+
+        Ok(client)
+    }
+
+    pub fn get_sender(&self) -> mpsc::Sender<WaylandCommand> {
+        self.command_sender.clone()
+    }
+
+    pub async fn run(&mut self) -> Result<()> {
+        let mut event_queue = self.conn.new_event_queue();
+        let qh = event_queue.handle();
+
+        loop {
+            tokio::select! {
+                // Handle IPC commands
+                Some(command) = self.command_receiver.recv() => {
+                    if let Err(e) = self.handle_command(command, &qh).await {
+                        error!("Error handling command: {}", e);
+                    }
+                }
+
+                else => break,
+            }
+
+            // Process Wayland events
+            event_queue.blocking_dispatch(self)?;
+        }
+
+        Ok(())
+    }
+
+    fn create_surface_for_output(
+        &mut self,
+        name: &str,
+        output_info: &OutputInfo,
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        let surface = self.compositor_state.create_surface(qh);
+
+        let layer_surface = self.layer_shell.create_layer_surface(
+            qh,
+            surface.clone(),
+            Layer::Background,
+            Some("papyrust-wallpaper"),
+            Some(&output_info.output),
+        );
+
+        layer_surface.set_size(output_info.width as u32, output_info.height as u32);
+        layer_surface.set_anchor(Anchor::all());
+        layer_surface.set_exclusive_zone(-1);
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+
+        surface.commit();
+
+        let surface_info = SurfaceInfo {
+            surface,
+            layer_surface,
+            width: output_info.width as u32,
+            height: output_info.height as u32,
+            current_content: None,
+        };
+
+        self.surfaces.insert(name.to_string(), surface_info);
+        info!("Created surface for output: {}", name);
+
+        Ok(())
+    }
+
+    async fn handle_command(
+        &mut self,
+        command: WaylandCommand,
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        use WaylandCommand::*;
+
+        match command {
+            SetImage { path, output, mode } => {
+                self.set_image(path, output, mode, qh).await?;
+            }
+            SetVideo {
+                path,
+                output,
+                r#loop,
+                audio,
+            } => {
+                self.set_video(path, output, r#loop, audio, qh).await?;
+            }
+            SetGif { path, output, mode } => {
+                self.set_gif(path, output, mode, qh).await?;
+            }
+            Query { output } => {
+                self.query_status(output);
+            }
+            Stop { output } => {
+                self.stop_content(output, qh).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_image(
+        &mut self,
+        path: String,
+        output: String,
+        mode: crate::config::ScalingMode,
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        let targets = self.resolve_output_targets(&output);
+
+        for target in targets {
+            if let Some(surface_info) = self.surfaces.get_mut(&target) {
+                let buffer = self
+                    .renderer
+                    .render_image(
+                        &path,
+                        surface_info.width,
+                        surface_info.height,
+                        mode,
+                        &self.shm.wl_shm(),
+                        qh,
+                    )
+                    .await?;
+
+                surface_info.surface.attach(Some(&buffer), 0, 0);
+                surface_info.surface.damage_buffer(
+                    0,
+                    0,
+                    surface_info.width as i32,
+                    surface_info.height as i32,
+                );
+                surface_info.surface.commit();
+                surface_info.current_content = Some(path.clone());
+
+                info!("Set image {} on output {}", path, target);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_video(
+        &mut self,
+        path: String,
+        output: String,
+        r#loop: bool,
+        audio: bool,
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        let targets = self.resolve_output_targets(&output);
+
+        for target in targets {
+            if let Some(surface_info) = self.surfaces.get_mut(&target) {
+                self.renderer
+                    .start_video(
+                        &path,
+                        &target,
+                        surface_info.width,
+                        surface_info.height,
+                        r#loop,
+                        audio,
+                        &self.shm.wl_shm(),
+                        qh,
+                        surface_info.surface.clone(),
+                    )
+                    .await?;
+
+                surface_info.current_content = Some(path.clone());
+                info!("Started video {} on output {}", path, target);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_gif(
+        &mut self,
+        path: String,
+        output: String,
+        mode: crate::config::ScalingMode,
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        let targets = self.resolve_output_targets(&output);
+
+        for target in targets {
+            if let Some(surface_info) = self.surfaces.get_mut(&target) {
+                self.renderer
+                    .start_gif(
+                        &path,
+                        &target,
+                        surface_info.width,
+                        surface_info.height,
+                        mode,
+                        &self.shm.wl_shm(),
+                        qh,
+                        surface_info.surface.clone(),
+                    )
+                    .await?;
+
+                surface_info.current_content = Some(path.clone());
+                info!("Started GIF {} on output {}", path, target);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn query_status(&self, output: String) {
+        let targets = self.resolve_output_targets(&output);
+
+        for target in targets {
+            if let Some(surface_info) = self.surfaces.get(&target) {
+                let content = surface_info.current_content.as_deref().unwrap_or("none");
+                info!(
+                    "Output {}: {} ({}x{})",
+                    target, content, surface_info.width, surface_info.height
+                );
+            }
+        }
+    }
+
+    async fn stop_content(&mut self, output: String, qh: &QueueHandle<Self>) -> Result<()> {
+        let targets = self.resolve_output_targets(&output);
+
+        for target in targets {
+            if let Some(surface_info) = self.surfaces.get_mut(&target) {
+                // Stop any ongoing animations
+                self.renderer.stop_content(&target);
+
+                // Clear the surface with black
+                let buffer = self
+                    .renderer
+                    .create_solid_color_buffer(
+                        surface_info.width,
+                        surface_info.height,
+                        [0, 0, 0, 255],
+                        &self.shm.wl_shm(),
+                        qh,
+                    )
+                    .await?;
+
+                surface_info.surface.attach(Some(&buffer), 0, 0);
+                surface_info.surface.damage_buffer(
+                    0,
+                    0,
+                    surface_info.width as i32,
+                    surface_info.height as i32,
+                );
+                surface_info.surface.commit();
+                surface_info.current_content = None;
+
+                info!("Stopped content on output {}", target);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resolve_output_targets(&self, output: &str) -> Vec<String> {
+        if output == "all" {
+            self.outputs.keys().cloned().collect()
+        } else {
+            vec![output.to_string()]
+        }
+    }
+}
+
+// Implement required traits for smithay-client-toolkit
+impl CompositorHandler for WaylandClient {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+        // Handle scale factor changes
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+        // Handle transform changes
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+        // Handle frame callbacks
+    }
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+        // Handle surface entering output
+    }
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+        // Handle surface leaving output
+    }
+}
+
+impl OutputHandler for WaylandClient {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        // Handle new output
+        if let Some(info) = self.output_state.info(&output) {
+            let output_info = OutputInfo {
+                output: output.clone(),
+                name: info
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("output-{}", self.outputs.len())),
+                width: info.logical_size.unwrap_or((1920, 1080)).0,
+                height: info.logical_size.unwrap_or((1920, 1080)).1,
+                scale: info.scale_factor,
+            };
+
+            let name = output_info.name.clone();
+            self.outputs.insert(name.clone(), output_info.clone());
+
+            if let Err(e) = self.create_surface_for_output(&name, &output_info, qh) {
+                error!("Failed to create surface for output {}: {}", name, e);
+            }
+        }
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+        // Handle output updates
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        // Handle output destruction
+        self.outputs.retain(|_, info| info.output != output);
+    }
+}
+
+impl LayerShellHandler for WaylandClient {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
+        // Handle layer surface closure
+    }
+
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer: &LayerSurface,
+        _configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        // Handle layer surface configuration
+    }
+}
+
+impl ShmHandler for WaylandClient {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+impl ProvidesRegistryState for WaylandClient {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+
+    registry_handlers![OutputState];
+}
+
+// Add dispatch implementations for buffer and shm pool
+impl wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()> for WaylandClient {
+    fn event(
+        _: &mut Self,
+        _: &wl_shm_pool::WlShmPool,
+        _: wl_shm_pool::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // Handle shm pool events
+    }
+}
+
+impl wayland_client::Dispatch<wl_buffer::WlBuffer, ()> for WaylandClient {
+    fn event(
+        _: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        _: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // Handle buffer events
+    }
+}
+
+delegate_compositor!(WaylandClient);
+delegate_output!(WaylandClient);
+delegate_shm!(WaylandClient);
+delegate_layer!(WaylandClient);
+delegate_registry!(WaylandClient);
+</file>
+
+<file path="src/daemon/main.rs">
+use anyhow::Result;
+use clap::Parser;
+use log::{error, info};
+use std::process;
+
+mod cache;
+mod config;
+mod ipc;
+mod renderer;
+mod video;
+mod wayland;
+
+use config::Config;
+use wayland::WaylandClient;
+
+#[derive(Parser)]
+#[command(name = "papyrust-daemon")]
+#[command(about = "Wayland wallpaper daemon with image, GIF, and video support")]
+struct Args {
+    /// Enable debug logging
+    #[arg(short, long)]
+    debug: bool,
+
+    /// Socket path (default: $XDG_RUNTIME_DIR/papyrust.socket)
+    #[arg(short, long)]
+    socket: Option<String>,
+
+    /// Default scaling mode
+    #[arg(long, default_value = "fill")]
+    mode: String,
+
+    /// Disable transitions
+    #[arg(long)]
+    no_transitions: bool,
+
+    /// Transition duration in milliseconds
+    #[arg(long, default_value = "300")]
+    transition_duration: u64,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Initialize logging
+    if args.debug {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+    } else {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Info)
+            .init();
+    }
+
+    info!("Starting Papyrust daemon");
+
+    // Create configuration
+    let config = Config::new(args)?;
+
+    // Initialize Wayland client
+    let mut wayland_client = match WaylandClient::new(&config).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to initialize Wayland client: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // Start IPC server
+    let ipc_handle = ipc::start_server(&config, wayland_client.get_sender()).await?;
+
+    info!("Daemon started successfully");
+
+    // Run the main event loop
+    tokio::select! {
+        result = wayland_client.run() => {
+            if let Err(e) = result {
+                error!("Wayland client error: {}", e);
+            }
+        }
+        result = ipc_handle => {
+            if let Err(e) = result {
+                error!("IPC server error: {}", e);
+            }
+        }
+    }
+
+    info!("Daemon shutting down");
+    Ok(())
+}
+</file>
 
 <file path="src/ui/discover.rs">
 use iced::Element;
@@ -725,10 +2831,19 @@ pub fn build(_app: &crate::Papyrust) -> Element<Message> {
 }
 </file>
 
+<file path=".gitignore">
+/target
+repomix-output.xml
+flamegraph.svg
+perf.data
+perf.data.old
+stacks.folded
+</file>
+
 <file path="src/ui/popup.rs">
 use iced::{
     alignment::{Horizontal, Vertical},
-    widget::{button, text, Button, Column, Container, Row, Space},
+    widget::{button, mouse_area, text, Button, Column, Container, Row, Space},
     Background, Border, Color, Element, Length, Padding, Shadow, Vector,
 };
 use iced_video_player::VideoPlayer;
@@ -838,16 +2953,21 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center);
 
-    Container::new(popup)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_theme| iced::widget::container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
-            ..Default::default()
-        })
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .into()
+    let protected = mouse_area(popup).on_press(Message::DoNothing);
+
+    mouse_area(
+        Container::new(protected)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
+                ..Default::default()
+            })
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center),
+    )
+    .on_press(Message::ClosePopup)
+    .into()
 }
 
 fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
@@ -944,15 +3064,6 @@ fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Me
 }
 </file>
 
-<file path=".gitignore">
-/target
-repomix-output.xml
-flamegraph.svg
-perf.data
-perf.data.old
-stacks.folded
-</file>
-
 <file path="src/ui/view.rs">
 use iced::{
     alignment::{Horizontal, Vertical},
@@ -1027,7 +3138,7 @@ pub fn create_grid<'a>(
 [package]
 name = "papyrust"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 derive = "1.0.0"
@@ -1040,12 +3151,34 @@ image = "0.25.6"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 shellexpand = "3.1.1"
-tokio = { version = "1.45.1", features = ["fs"] }
+tokio = { version = "1.45.1", features = ["fs", "net", "rt-multi-thread", "macros", "time", "io-util", "sync"] }
 url = "2.5.4"
 
+# Daemon-specific dependencies
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+wayland-protocols = "0.32"
+calloop = "0.13"
+libmpv = "2.0"
+lz4_flex = "0.11"
+clap = { version = "4.5", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+memmap2 = "0.9"
+anyhow = "1.0"
+tempfile = "3.10"
+libc = "0.2"
 
 [profile.release]
 debug = true
+
+[[bin]]
+name = "papyrust-daemon"
+path = "src/daemon/main.rs"
+
+[[bin]]
+name = "papyrust"
+path = "src/main.rs"
 </file>
 
 <file path="src/ui/state.rs">
@@ -1085,16 +3218,20 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::OpenPopup(project) => {
+            app.popup_state = Some(project.clone());
+
             if let Some(file_name) = &project.meta.file {
                 let video_path = format!("{}/{}", project.path, file_name);
                 if app.should_load(&video_path) {
-                    app.load_video(&video_path);
+                    return Papyrust::load_video_async(video_path);
                 }
             }
-            app.popup_state = Some(project);
             Task::none()
         }
         Message::ClosePopup => {
+            for video in app.videos.values_mut() {
+                video.set_paused(true);
+            }
             app.popup_state = None;
             Task::none()
         }
@@ -1102,113 +3239,16 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             app.load_video(&path);
             Task::none()
         }
-    }
-}
-</file>
-
-<file path="src/main.rs">
-use std::collections::HashMap;
-
-use iced::{Element, Font, Settings, Subscription, Task};
-use iced_video_player::Video;
-use library::project::Project;
-use ui::state;
-
-mod library;
-mod ui;
-
-use ui::library::Library;
-use ui::{state::Page, view};
-
-pub struct Papyrust {
-    pub current_page: Page,
-    pub library: Library,
-    pub animation_state: usize,
-    pub popup_state: Option<Project>,
-    pub videos: HashMap<String, Video>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Message {
-    SwitchPage(Page),
-    PreviewDecoded(usize, u32, u32, Vec<u8>),
-    PreviewError(usize),
-    OpenPopup(Project),
-    ClosePopup,
-    Tick,
-    LoadVideo(String),
-}
-
-const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
-const _UNIFONT_BYTES: &[u8] = include_bytes!("../fonts/unifont.ttf");
-
-const _FIRA: Font = Font::with_name("FiraCode Nerd Font Mono Reg");
-const _UNIFONT: Font = Font::with_name("Unifont");
-
-impl Papyrust {
-    fn new() -> (Self, Task<Message>) {
-        let mut library = Library::new();
-        let first = library.next().unwrap_or_else(Task::none);
-        (
-            Papyrust {
-                current_page: Page::default(),
-                library,
-                animation_state: 0,
-                popup_state: None,
-                videos: HashMap::new(),
-            },
-            first,
-        )
-    }
-
-    pub fn load_video(&mut self, path: &str) -> Option<&Video> {
-        if !self.videos.contains_key(path) {
-            if let Ok(url) = url::Url::parse(&format!("file://{}", path)) {
-                if let Ok(video) = Video::new(&url) {
-                    self.videos.insert(path.to_string(), video);
-                }
-            }
+        Message::VideoLoaded(path) => {
+            app.load_video(&path);
+            Task::none()
         }
-        self.videos.get(path)
+        Message::VideoError(path, error) => {
+            eprintln!("Failed to load video {}: {}", path, error);
+            Task::none()
+        }
+        Message::DoNothing => Task::none(),
     }
-
-    pub fn peek_video(&self, path: &str) -> Option<&Video> {
-        self.videos.get(path)
-    }
-
-    pub fn should_load(&self, path: &str) -> bool {
-        !self.videos.contains_key(path)
-    }
-
-    pub fn tick(&mut self) {
-        self.animation_state = (self.animation_state + 1) % 4;
-    }
-
-    fn update(&mut self, message: Message) -> Task<Message> {
-        state::update(self, message)
-    }
-
-    fn view(&self) -> Element<Message> {
-        view::build(self)
-    }
-
-    fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(std::time::Duration::from_millis(300)).map(|_| Message::Tick)
-    }
-}
-
-fn main() -> iced::Result {
-    iced::application("Papyrust", Papyrust::update, Papyrust::view)
-        // .font(FIRA_BYTES)
-        // .font(UNIFONT_BYTES)
-        // .default_font(FIRA)
-        .settings(Settings {
-            default_font: Font::MONOSPACE,
-            ..Default::default()
-        })
-        .subscription(Papyrust::subscription)
-        .theme(|_| iced::theme::Theme::GruvboxDark)
-        .run_with(Papyrust::new)
 }
 </file>
 
@@ -1525,6 +3565,131 @@ fn create_preview<'a>(
         })
         .into()
     }
+}
+</file>
+
+<file path="src/main.rs">
+use std::collections::HashMap;
+
+use iced::{Element, Font, Settings, Subscription, Task};
+use iced_video_player::Video;
+use library::project::Project;
+use ui::state;
+
+mod library;
+mod ui;
+
+use ui::library::Library;
+use ui::{state::Page, view};
+
+pub struct Papyrust {
+    pub current_page: Page,
+    pub library: Library,
+    pub animation_state: usize,
+    pub popup_state: Option<Project>,
+    pub videos: HashMap<String, Video>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    SwitchPage(Page),
+    PreviewDecoded(usize, u32, u32, Vec<u8>),
+    PreviewError(usize),
+    OpenPopup(Project),
+    ClosePopup,
+    Tick,
+    LoadVideo(String),
+    VideoLoaded(String),
+    VideoError(String, String),
+    DoNothing,
+}
+
+const _FIRA_BYTES: &[u8] = include_bytes!("../fonts/FiraCodeNerdFontMono-Regular.ttf");
+const _UNIFONT_BYTES: &[u8] = include_bytes!("../fonts/unifont.ttf");
+
+const _FIRA: Font = Font::with_name("FiraCode Nerd Font Mono Reg");
+const _UNIFONT: Font = Font::with_name("Unifont");
+
+impl Papyrust {
+    fn new() -> (Self, Task<Message>) {
+        let mut library = Library::new();
+        let first = library.next().unwrap_or_else(Task::none);
+        (
+            Papyrust {
+                current_page: Page::default(),
+                library,
+                animation_state: 0,
+                popup_state: None,
+                videos: HashMap::new(),
+            },
+            first,
+        )
+    }
+
+    pub fn load_video(&mut self, path: &str) -> Option<&Video> {
+        if !self.videos.contains_key(path) {
+            if let Ok(url) = url::Url::parse(&format!("file://{}", path)) {
+                if let Ok(video) = Video::new(&url) {
+                    self.videos.insert(path.to_string(), video);
+                }
+            }
+        }
+        self.videos.get(path)
+    }
+
+    pub fn load_video_async(path: String) -> Task<Message> {
+        Task::perform(
+            async move {
+                match url::Url::parse(&format!("file://{}", path)) {
+                    Ok(url) => match tokio::task::spawn_blocking(move || Video::new(&url)).await {
+                        Ok(Ok(_)) => Message::VideoLoaded(path),
+                        Ok(Err(e)) => Message::VideoError(path, e.to_string()),
+                        Err(e) => Message::VideoError(path, format!("Task error: {}", e)),
+                    },
+                    Err(e) => Message::VideoError(path, format!("Invalid URL: {}", e)),
+                }
+            },
+            |msg| msg,
+        )
+    }
+
+    pub fn peek_video(&self, path: &str) -> Option<&Video> {
+        self.videos.get(path)
+    }
+
+    pub fn should_load(&self, path: &str) -> bool {
+        !self.videos.contains_key(path)
+    }
+
+    pub fn tick(&mut self) {
+        self.animation_state = (self.animation_state + 1) % 4;
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        state::update(self, message)
+    }
+
+    fn view(&self) -> Element<Message> {
+        view::build(self)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        iced::time::every(std::time::Duration::from_millis(300)).map(|_| Message::Tick)
+    }
+}
+
+fn main() -> iced::Result {
+    iced::application("Papyrust", Papyrust::update, Papyrust::view)
+        // .font(FIRA_BYTES)
+        // .font(UNIFONT_BYTES)
+        // .default_font(FIRA)
+        .settings(Settings {
+            default_font: Font::MONOSPACE,
+            ..Default::default()
+        })
+        .subscription(Papyrust::subscription)
+        .theme(|_| iced::theme::Theme::GruvboxDark)
+        .run_with(Papyrust::new)
 }
 </file>
 
