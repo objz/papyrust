@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 # Core dependencies shared by both binaries
 clap = { version = "4.5.23", features = ["derive"] }
+shellexpand = "3.1.1"
 
 # GUI-only dependencies
 derive = { version = "1.0.0", optional = true }
@@ -17,13 +18,12 @@ iced_video_player = { git = "https://github.com/jazzfool/iced_video_player", opt
 image = { version = "0.25.6", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 serde_json = { version = "1.0.140", optional = true }
-shellexpand = { version = "3.1.1", optional = true }
 tokio = { version = "1.45.1", features = ["fs"], optional = true }
 url = { version = "2.5.4", optional = true }
 
 [features]
 default = []
-gui = ["derive", "fast_image_resize", "futures", "iced", "iced_aw", "iced_video_player", "image", "serde", "serde_json", "shellexpand", "tokio", "url"]
+gui = ["derive", "fast_image_resize", "futures", "iced", "iced_aw", "iced_video_player", "image", "serde", "serde_json", "tokio", "url"]
 
 [profile.release]
 debug = true

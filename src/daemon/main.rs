@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 use std::process;
-use std::env;
 use clap::Parser;
 
 /// Papyrust daemon for applying wallpapers from shader files
@@ -19,19 +18,12 @@ struct Args {
     shader: String,
 }
 
-fn expand_path(path: &str) -> String {
-    if path.starts_with("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return path.replacen("~", &home, 1);
-        }
-    }
-    path.to_string()
-}
-
 fn validate_shader_path(path: &str) -> Result<String, String> {
-    // Expand tilde in path
-    let expanded_path = expand_path(path);
-    let path_buf = Path::new(&expanded_path);
+    // Expand tilde and environment variables
+    let expanded_path = shellexpand::full(path)
+        .map_err(|e| format!("Failed to expand path '{}': {}", path, e))?;
+    
+    let path_buf = Path::new(expanded_path.as_ref());
     
     // Check if file exists
     if !path_buf.exists() {
@@ -59,7 +51,7 @@ fn validate_shader_path(path: &str) -> Result<String, String> {
         _ => return Err(format!("Unexpected file extension '{}'. Expected shader file extensions: .frag, .vert, .glsl, .shader", extension)),
     }
     
-    Ok(expanded_path)
+    Ok(expanded_path.into_owned())
 }
 
 fn validate_output_name(output: &str) -> Result<(), String> {
