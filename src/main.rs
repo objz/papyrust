@@ -26,6 +26,7 @@ pub enum Message {
     PreviewError(usize),
     OpenPopup(Project),
     ClosePopup,
+    ApplyProject(Project),
     Tick,
     LoadVideo(String),
     VideoLoaded(String),

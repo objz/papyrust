@@ -51,6 +51,25 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             app.popup_state = None;
             Task::none()
         }
+        Message::ApplyProject(project) => {
+            if let Some(popup) = &app.popup_state {
+                if popup.path == project.path {
+                    app.popup_state = Some(project.clone());
+                }
+            } else {
+                app.popup_state = Some(project.clone());
+            }
+
+            if let Some(file_name) = &project.meta.file {
+                let video_path = format!("{}/{}", project.path, file_name);
+                crate::ui::ipc::set_video("DP-3".to_string(), video_path, None).unwrap_or_else(
+                    |e| {
+                        eprintln!("Failed to set video: {}", e);
+                    },
+                );
+            }
+            Task::none()
+        }
         Message::LoadVideo(path) => {
             app.load_video(&path);
             Task::none()

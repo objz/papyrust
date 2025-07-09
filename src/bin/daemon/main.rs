@@ -58,11 +58,10 @@ fn main() -> Result<()> {
         }
     }
 
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
 
-    let ipc_tx = tx.clone();
     thread::spawn(move || {
-        if let Err(e) = ipc::start_server(ipc_tx) {
+        if let Err(e) = ipc::start_server() {
             eprintln!("IPC server error: {}", e);
         }
     });

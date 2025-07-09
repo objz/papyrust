@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::mpsc::Sender;
 use std::thread;
 
 use crate::media::MediaType;
@@ -23,7 +22,6 @@ pub enum IpcCommand {
         path: String,
         monitor: Option<String>,
     },
-    GetStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,7 +37,7 @@ pub struct MediaChange {
     pub monitor: Option<String>,
 }
 
-pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
+pub fn start_server() -> Result<()> {
     let socket_path = "/tmp/papyrust-daemon.sock";
 
     let _ = std::fs::remove_file(socket_path);
@@ -52,9 +50,8 @@ pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let tx_clone = tx.clone();
                 thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, tx_clone) {
+                    if let Err(e) = handle_client(stream) {
                         eprintln!("Client error: {}", e);
                     }
                 });
@@ -68,7 +65,7 @@ pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     Ok(())
 }
 
-fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
+fn handle_client(stream: UnixStream) -> Result<()> {
     let mut reader = BufReader::new(&stream);
     let mut writer = stream.try_clone()?;
     let mut line = String::new();
@@ -83,48 +80,27 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 shader,
                 monitor,
             } => {
-                let media_change = MediaChange {
+                MediaChange {
                     media_type: MediaType::Image { path, shader },
                     monitor,
                 };
-                match tx.send(media_change) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
             }
             IpcCommand::SetVideo {
                 path,
                 shader,
                 monitor,
             } => {
-                let media_change = MediaChange {
+                MediaChange {
                     media_type: MediaType::Video { path, shader },
                     monitor,
                 };
-                match tx.send(media_change) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
             }
             IpcCommand::SetShader { path, monitor } => {
-                let media_change = MediaChange {
+                MediaChange {
                     media_type: MediaType::Shader(path),
                     monitor,
                 };
-                match tx.send(media_change) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
             }
-            IpcCommand::GetStatus => IpcResponse::Status {
-                current_media: "Unknown".to_string(),
-            },
         };
 
         let response_json = serde_json::to_string(&response)?;

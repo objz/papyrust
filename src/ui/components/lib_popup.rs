@@ -40,6 +40,7 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
 
     let apply_button = Button::new(text("Apply").size(16))
         .padding(Padding::from([8, 12]))
+        .on_press(Message::ApplyProject(project.clone()))
         .style(|_theme, status| {
             let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
             let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);

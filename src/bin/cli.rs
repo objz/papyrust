@@ -33,7 +33,6 @@ enum Commands {
         #[arg(long)]
         monitor: Option<String>,
     },
-    Status,
 }
 
 fn main() -> Result<()> {
@@ -75,9 +74,6 @@ fn main() -> Result<()> {
                     "monitor": monitor
                 }
             })
-        }
-        Commands::Status => {
-            serde_json::json!("GetStatus")
         }
     };
 

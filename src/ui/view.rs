@@ -7,7 +7,7 @@ use iced_aw::Wrap;
 
 use crate::{ui::loader::project::Project, Message, Papyrust};
 
-use super::{components::panel, pages::discover, pages::library, popup, state};
+use super::{components::lib_popup, components::panel, pages::discover, pages::library, state};
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let content = match app.current_page {
@@ -41,7 +41,7 @@ pub fn build(app: &Papyrust) -> Element<Message> {
     if let Some(ref project) = app.popup_state {
         Stack::new()
             .push(main_content)
-            .push(popup::build(app, project))
+            .push(lib_popup::build(app, project))
             .into()
     } else {
         main_content.into()
