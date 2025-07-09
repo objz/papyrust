@@ -273,7 +273,38 @@ impl MediaRenderer {
     }
 
     fn create_pure_shader(shader_path: &str) -> Result<u32> {
-        let frag_source = load_shader(shader_path)?;
+        let raw = load_shader(shader_path)?;
+
+        let mut lines = raw.lines();
+        let (version_directive, rest_of_shader) = if let Some(first) = lines.next() {
+            let trimmed = first.trim_start();
+            if trimmed.starts_with("#version") {
+                let body = lines.collect::<Vec<_>>().join("\n");
+                (Some(first), body)
+            } else {
+                (None, raw.clone())
+            }
+        } else {
+            (None, String::new())
+        };
+
+        let mut frag_source = String::new();
+        if let Some(v) = version_directive {
+            frag_source.push_str(v);
+            frag_source.push('\n');
+        }
+        frag_source.push_str(
+            r#"
+                #ifdef GL_ES
+                  #ifdef GL_FRAGMENT_PRECISION_HIGH
+                    precision highp float;
+                  #else
+                    precision mediump float;
+                  #endif
+                #endif
+            "#,
+        );
+        frag_source.push_str(&rest_of_shader);
 
         let vert_source = r#"
             #version 100
@@ -290,7 +321,39 @@ impl MediaRenderer {
     }
 
     fn create_media_shader(shader_path: &str) -> Result<u32> {
-        let frag_source = load_shader(shader_path)?;
+        let raw = load_shader(shader_path)?;
+
+        let mut lines = raw.lines();
+        let (version_directive, rest_of_shader) = if let Some(first) = lines.next() {
+            let trimmed = first.trim_start();
+            if trimmed.starts_with("#version") {
+                let body = lines.collect::<Vec<_>>().join("\n");
+                (Some(first), body)
+            } else {
+                (None, raw.clone())
+            }
+        } else {
+            (None, String::new())
+        };
+
+        let mut frag_source = String::new();
+        if let Some(v) = version_directive {
+            frag_source.push_str(v);
+            frag_source.push('\n');
+        }
+        frag_source.push_str(
+            r#"
+                #ifdef GL_ES
+                  #ifdef GL_FRAGMENT_PRECISION_HIGH
+                    precision highp float;
+                  #else
+                    precision mediump float;
+                  #endif
+                #endif
+            "#,
+        );
+        frag_source.push_str(&rest_of_shader);
+
         let vert_source = vertex_shader();
         Self::compile(vert_source, &frag_source)
     }

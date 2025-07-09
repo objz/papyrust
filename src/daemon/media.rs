@@ -37,6 +37,8 @@ impl ImageLoader {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
 
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
@@ -124,6 +126,8 @@ impl VideoDecoder {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
 
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
@@ -206,6 +210,7 @@ impl VideoDecoder {
 
                             unsafe {
                                 gl::BindTexture(gl::TEXTURE_2D, self.texture);
+                                gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
                                 gl::TexSubImage2D(
                                     gl::TEXTURE_2D,
                                     0,
@@ -242,8 +247,6 @@ impl VideoDecoder {
     }
 
     fn restart_video(&mut self) -> Result<()> {
-        eprintln!("Restarting video from beginning");
-
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
             eprintln!("Seeking failed, recreating input context");
 
