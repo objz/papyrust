@@ -14,28 +14,25 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Set an image as wallpaper
     Image {
-        /// Path to image file
         path: String,
-        /// Optional shader file to apply effects
         #[arg(long)]
         shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
     },
-    /// Set a video as wallpaper
     Video {
-        /// Path to video file
         path: String,
-        /// Optional shader file to apply effects
         #[arg(long)]
         shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
     },
-    /// Set a pure shader as wallpaper
     Shader {
-        /// Path to shader file
         path: String,
+        #[arg(long)]
+        monitor: Option<String>,
     },
-    /// Get current status
     Status,
 }
 
@@ -45,26 +42,37 @@ fn main() -> Result<()> {
     let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
 
     let command = match args.command {
-        Commands::Image { path, shader } => {
+        Commands::Image {
+            path,
+            shader,
+            monitor,
+        } => {
             serde_json::json!({
                 "SetImage": {
                     "path": path,
-                    "shader": shader
+                    "shader": shader,
+                    "monitor": monitor
                 }
             })
         }
-        Commands::Video { path, shader } => {
+        Commands::Video {
+            path,
+            shader,
+            monitor,
+        } => {
             serde_json::json!({
                 "SetVideo": {
                     "path": path,
-                    "shader": shader
+                    "shader": shader,
+                    "monitor": monitor
                 }
             })
         }
-        Commands::Shader { path } => {
+        Commands::Shader { path, monitor } => {
             serde_json::json!({
                 "SetShader": {
-                    "path": path
+                    "path": path,
+                    "monitor": monitor
                 }
             })
         }

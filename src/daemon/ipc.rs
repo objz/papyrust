@@ -12,13 +12,16 @@ pub enum IpcCommand {
     SetImage {
         path: String,
         shader: Option<String>,
+        monitor: Option<String>,
     },
     SetVideo {
         path: String,
         shader: Option<String>,
+        monitor: Option<String>,
     },
     SetShader {
         path: String,
+        monitor: Option<String>,
     },
     GetStatus,
 }
@@ -30,10 +33,15 @@ pub enum IpcResponse {
     Status { current_media: String },
 }
 
-pub fn start_server(tx: Sender<MediaType>) -> Result<()> {
+#[derive(Debug, Clone)]
+pub struct MediaChange {
+    pub media_type: MediaType,
+    pub monitor: Option<String>,
+}
+
+pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     let socket_path = "/tmp/papyrust-daemon.sock";
 
-    // Remove existing
     let _ = std::fs::remove_file(socket_path);
 
     let listener =
@@ -60,7 +68,7 @@ pub fn start_server(tx: Sender<MediaType>) -> Result<()> {
     Ok(())
 }
 
-fn handle_client(stream: UnixStream, tx: Sender<MediaType>) -> Result<()> {
+fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
     let mut reader = BufReader::new(&stream);
     let mut writer = stream.try_clone()?;
     let mut line = String::new();
@@ -70,27 +78,44 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaType>) -> Result<()> {
             .map_err(|e| anyhow!("Invalid JSON command: {}", e))?;
 
         let response = match command {
-            IpcCommand::SetImage { path, shader } => {
-                let media_type = MediaType::Image { path, shader };
-                match tx.send(media_type) {
+            IpcCommand::SetImage {
+                path,
+                shader,
+                monitor,
+            } => {
+                let media_change = MediaChange {
+                    media_type: MediaType::Image { path, shader },
+                    monitor,
+                };
+                match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
                     Err(e) => IpcResponse::Error {
                         message: e.to_string(),
                     },
                 }
             }
-            IpcCommand::SetVideo { path, shader } => {
-                let media_type = MediaType::Video { path, shader };
-                match tx.send(media_type) {
+            IpcCommand::SetVideo {
+                path,
+                shader,
+                monitor,
+            } => {
+                let media_change = MediaChange {
+                    media_type: MediaType::Video { path, shader },
+                    monitor,
+                };
+                match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
                     Err(e) => IpcResponse::Error {
                         message: e.to_string(),
                     },
                 }
             }
-            IpcCommand::SetShader { path } => {
-                let media_type = MediaType::Shader(path);
-                match tx.send(media_type) {
+            IpcCommand::SetShader { path, monitor } => {
+                let media_change = MediaChange {
+                    media_type: MediaType::Shader(path),
+                    monitor,
+                };
+                match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
                     Err(e) => IpcResponse::Error {
                         message: e.to_string(),

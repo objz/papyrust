@@ -11,6 +11,7 @@ use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zx
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::gl_bindings as gl;
+use crate::ipc::MediaChange;
 use crate::media::{
     default_shader, load_shader, vertex_shader, ImageLoader, MediaType, VideoDecoder,
 };
@@ -18,9 +19,9 @@ use crate::utils;
 
 const N_SAMPLES: usize = 44100 / 25;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct OutputInfo {
-    id: u32,
+    _id: u32,
     output: wl_output::WlOutput,
     width: i32,
     height: i32,
@@ -47,21 +48,19 @@ struct AppState {
     compositor: Option<wl_compositor::WlCompositor>,
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
-    target_output: Option<OutputInfo>,
-    monitor_name: String,
-    configured: bool,
+    configured_count: usize,
+    total_surfaces: usize,
 }
 
 impl AppState {
-    fn new(monitor_name: String) -> Self {
+    fn new() -> Self {
         Self {
             outputs: HashMap::new(),
             compositor: None,
             layer_shell: None,
             output_manager: None,
-            target_output: None,
-            monitor_name,
-            configured: false,
+            configured_count: 0,
+            total_surfaces: 0,
         }
     }
 }
@@ -312,14 +311,12 @@ impl MediaRenderer {
             gl::CompileShader(vert_shader);
             Self::check_compile(vert_shader, "vertex")?;
 
-            // Create fragment shader
             let frag_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
             let frag_c_str = CString::new(frag_source)?;
             gl::ShaderSource(frag_shader, 1, &frag_c_str.as_ptr(), std::ptr::null());
             gl::CompileShader(frag_shader);
             Self::check_compile(frag_shader, "fragment")?;
 
-            // Link program
             gl::AttachShader(program, vert_shader);
             gl::AttachShader(program, frag_shader);
             gl::LinkProgram(program);
@@ -380,10 +377,7 @@ impl MediaRenderer {
 
     fn setup_geometry() -> Result<(u32, u32)> {
         let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 1.0, // Top left
-            -1.0, -1.0, 0.0, 0.0, // Bottom left
-            1.0, -1.0, 1.0, 0.0, // Bottom right
-            1.0, 1.0, 1.0, 1.0, // Top right
+            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
         ];
 
         let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
@@ -409,7 +403,6 @@ impl MediaRenderer {
                 gl::STATIC_DRAW,
             );
 
-            // (location 0)
             gl::VertexAttribPointer(
                 0,
                 2,
@@ -420,7 +413,6 @@ impl MediaRenderer {
             );
             gl::EnableVertexAttribArray(0);
 
-            // (location 1)
             gl::VertexAttribPointer(
                 1,
                 2,
@@ -500,6 +492,17 @@ impl MediaRenderer {
     }
 }
 
+struct MonitorState {
+    egl_display: egl::Display,
+    egl_surface: egl::Surface,
+    egl_context: egl::Context,
+    renderer: MediaRenderer,
+    output_info: OutputInfo,
+    _surface: wl_surface::WlSurface,
+    _layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    _egl_surface_wrapper: wayland_egl::WlEglSurface,
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
         state: &mut Self,
@@ -523,7 +526,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         state.outputs.insert(
                             name,
                             OutputInfo {
-                                id: name,
+                                _id: name,
                                 output,
                                 width: 0,
                                 height: 0,
@@ -613,16 +616,7 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for AppState {
         match event {
             zxdg_output_v1::Event::Name { name } => {
                 if let Some(output_info) = state.outputs.get_mut(output_id) {
-                    output_info.name = Some(name.clone());
-                    if state.monitor_name.is_empty() || name == state.monitor_name {
-                        state.target_output = Some(OutputInfo {
-                            id: output_info.id,
-                            output: output_info.output.clone(),
-                            width: output_info.width,
-                            height: output_info.height,
-                            name: Some(name),
-                        });
-                    }
+                    output_info.name = Some(name);
                 }
             }
             _ => {}
@@ -646,7 +640,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
                 height: _,
             } => {
                 surface.ack_configure(serial);
-                state.configured = true;
+                state.configured_count += 1;
             }
             _ => {}
         }
@@ -713,82 +707,21 @@ impl Dispatch<wl_region::WlRegion, ()> for AppState {
     }
 }
 
-pub fn init(
-    monitor: &str,
-    media_type: MediaType,
-    fps: u16,
+fn create_monitor_state(
+    output_info: &OutputInfo,
+    compositor: &wl_compositor::WlCompositor,
+    layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
     layer_name: Option<&str>,
-    _width: u16,
-    _height: u16,
-    fifo_path: Option<&str>,
-    ipc_receiver: Receiver<MediaType>,
-) -> Result<()> {
-    let conn = Connection::connect_to_env()?;
-    let mut event_queue = conn.new_event_queue();
-    let qh = event_queue.handle();
+    media_type: MediaType,
+    egl_instance: &egl::Instance<egl::Static>,
+    conn: &Connection,
+    qh: &QueueHandle<AppState>,
+) -> Result<MonitorState> {
+    let surface = compositor.create_surface(qh, ());
 
-    let mut app_state = AppState::new(monitor.to_string());
-    let _registry = conn.display().get_registry(&qh, ());
-
-    event_queue.roundtrip(&mut app_state)?;
-
-    if let Some(ref output_manager) = app_state.output_manager {
-        for (id, output_info) in &app_state.outputs {
-            let _xdg_output = output_manager.get_xdg_output(&output_info.output, &qh, *id);
-        }
-    }
-
-    event_queue.roundtrip(&mut app_state)?;
-
-    let target_output = if monitor.is_empty() {
-        app_state.target_output.take().or_else(|| {
-            app_state.outputs.values().next().map(|o| OutputInfo {
-                id: o.id,
-                output: o.output.clone(),
-                width: o.width,
-                height: o.height,
-                name: o.name.clone(),
-            })
-        })
-    } else {
-        app_state.target_output.take()
-    }
-    .ok_or_else(|| {
-        let available: Vec<String> = app_state
-            .outputs
-            .values()
-            .filter_map(|o| o.name.as_ref())
-            .cloned()
-            .collect();
-        anyhow!(
-            "Could not find output '{}' (available: {})",
-            monitor,
-            available.join(", ")
-        )
-    })?;
-
-    info!(
-        "Using output: {} ({}x{})",
-        target_output.name.as_deref().unwrap_or("unknown"),
-        target_output.width,
-        target_output.height
-    );
-
-    let compositor = app_state
-        .compositor
-        .as_ref()
-        .ok_or_else(|| anyhow!("Compositor not available"))?;
-
-    let layer_shell = app_state
-        .layer_shell
-        .as_ref()
-        .ok_or_else(|| anyhow!("Layer shell not available"))?;
-
-    let surface = compositor.create_surface(&qh, ());
-
-    let input_region = compositor.create_region(&qh, ());
-    let render_region = compositor.create_region(&qh, ());
-    render_region.add(0, 0, target_output.width, target_output.height);
+    let input_region = compositor.create_region(qh, ());
+    let render_region = compositor.create_region(qh, ());
+    render_region.add(0, 0, output_info.width, output_info.height);
     surface.set_opaque_region(Some(&render_region));
     surface.set_input_region(Some(&input_region));
 
@@ -802,28 +735,18 @@ pub fn init(
 
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
-        Some(&target_output.output),
+        Some(&output_info.output),
         layer,
         "papyrust-daemon".to_string(),
-        &qh,
+        qh,
         (),
     );
 
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_size(target_output.width as u32, target_output.height as u32);
+    layer_surface.set_size(output_info.width as u32, output_info.height as u32);
     surface.commit();
 
-    event_queue.roundtrip(&mut app_state)?;
-
-    while !app_state.configured {
-        event_queue.blocking_dispatch(&mut app_state)?;
-    }
-
-    event_queue.roundtrip(&mut app_state)?;
-
-    // Setup EGL
     let display_ptr = conn.display().id().as_ptr();
-    let egl_instance = egl::Instance::new(egl::Static);
     let egl_display = unsafe { egl_instance.get_display(display_ptr as *mut _) }
         .ok_or_else(|| anyhow!("Failed to get EGL display for Wayland connection"))?;
 
@@ -860,7 +783,7 @@ pub fn init(
     let context = egl_instance.create_context(egl_display, *config, None, &context_attribs)?;
 
     let egl_surface_wrapper =
-        wayland_egl::WlEglSurface::new(surface.id(), target_output.width, target_output.height)?;
+        wayland_egl::WlEglSurface::new(surface.id(), output_info.width, output_info.height)?;
 
     let egl_surface = unsafe {
         egl_instance.create_window_surface(
@@ -878,13 +801,104 @@ pub fn init(
         Some(context),
     )?;
 
-    if fps == 0 {
-        egl_instance.swap_interval(egl_display, 1)?;
-    } else {
-        egl_instance.swap_interval(egl_display, 0)?;
+    let renderer = MediaRenderer::new(media_type)?;
+
+    Ok(MonitorState {
+        egl_display,
+        egl_surface,
+        egl_context: context,
+        renderer,
+        output_info: output_info.clone(),
+        _surface: surface,
+        _layer_surface: layer_surface,
+        _egl_surface_wrapper: egl_surface_wrapper,
+    })
+}
+
+pub fn init(
+    media_type: MediaType,
+    fps: u16,
+    layer_name: Option<&str>,
+    _width: u16,
+    _height: u16,
+    fifo_path: Option<&str>,
+    ipc_receiver: Receiver<MediaChange>,
+) -> Result<()> {
+    let conn = Connection::connect_to_env()?;
+    let mut event_queue = conn.new_event_queue();
+    let qh = event_queue.handle();
+
+    let mut app_state = AppState::new();
+    let _registry = conn.display().get_registry(&qh, ());
+
+    event_queue.roundtrip(&mut app_state)?;
+
+    if let Some(ref output_manager) = app_state.output_manager {
+        for (id, output_info) in &app_state.outputs {
+            let _xdg_output = output_manager.get_xdg_output(&output_info.output, &qh, *id);
+        }
     }
 
-    let mut renderer = MediaRenderer::new(media_type)?;
+    event_queue.roundtrip(&mut app_state)?;
+
+    let compositor = app_state
+        .compositor
+        .as_ref()
+        .ok_or_else(|| anyhow!("Compositor not available"))?;
+
+    let layer_shell = app_state
+        .layer_shell
+        .as_ref()
+        .ok_or_else(|| anyhow!("Layer shell not available"))?;
+
+    let egl_instance = egl::Instance::new(egl::Static);
+    let mut monitor_states = HashMap::new();
+
+    for output_info in app_state.outputs.values() {
+        if output_info.name.is_some() {
+            match create_monitor_state(
+                output_info,
+                compositor,
+                layer_shell,
+                layer_name,
+                media_type.clone(),
+                &egl_instance,
+                &conn,
+                &qh,
+            ) {
+                Ok(monitor_state) => {
+                    monitor_states
+                        .insert(output_info.name.as_ref().unwrap().clone(), monitor_state);
+                    app_state.total_surfaces += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Failed to create monitor state for {}: {}",
+                        output_info.name.as_ref().unwrap(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    event_queue.roundtrip(&mut app_state)?;
+
+    while app_state.configured_count < app_state.total_surfaces {
+        event_queue.blocking_dispatch(&mut app_state)?;
+    }
+
+    event_queue.roundtrip(&mut app_state)?;
+
+    if fps == 0 {
+        for monitor_state in monitor_states.values() {
+            egl_instance.swap_interval(monitor_state.egl_display, 1)?;
+        }
+    } else {
+        for monitor_state in monitor_states.values() {
+            egl_instance.swap_interval(monitor_state.egl_display, 0)?;
+        }
+    }
 
     let mut fifo_reader = if let Some(path) = fifo_path {
         Some(FifoReader::new(path)?)
@@ -892,21 +906,76 @@ pub fn init(
         None
     };
 
-    info!("Starting render loop");
+    info!(
+        "Starting render loop with {} monitors",
+        monitor_states.len()
+    );
 
     loop {
         let frame_start = utils::get_time_millis();
 
-        if let Ok(new_media_type) = ipc_receiver.try_recv() {
-            if let Err(e) = renderer.update_media(new_media_type) {
-                eprintln!("Failed to update media: {}", e);
+        if let Ok(media_change) = ipc_receiver.try_recv() {
+            if let Some(target_monitor) = &media_change.monitor {
+                if let Some(monitor_state) = monitor_states.get_mut(target_monitor) {
+                    egl_instance.make_current(
+                        monitor_state.egl_display,
+                        Some(monitor_state.egl_surface),
+                        Some(monitor_state.egl_surface),
+                        Some(monitor_state.egl_context),
+                    )?;
+                    if let Err(e) = monitor_state.renderer.update_media(media_change.media_type) {
+                        eprintln!(
+                            "Failed to update media for monitor {}: {}",
+                            target_monitor, e
+                        );
+                    }
+                } else {
+                    eprintln!("Monitor {} not found", target_monitor);
+                }
+            } else {
+                for monitor_state in monitor_states.values_mut() {
+                    egl_instance.make_current(
+                        monitor_state.egl_display,
+                        Some(monitor_state.egl_surface),
+                        Some(monitor_state.egl_surface),
+                        Some(monitor_state.egl_context),
+                    )?;
+                    if let Err(e) = monitor_state
+                        .renderer
+                        .update_media(media_change.media_type.clone())
+                    {
+                        eprintln!(
+                            "Failed to update media for monitor {}: {}",
+                            monitor_state
+                                .output_info
+                                .name
+                                .as_deref()
+                                .unwrap_or("unknown"),
+                            e
+                        );
+                    }
+                }
             }
         }
 
         event_queue.dispatch_pending(&mut app_state)?;
 
-        renderer.draw(&mut fifo_reader, target_output.width, target_output.height)?;
-        egl_instance.swap_buffers(egl_display, egl_surface)?;
+        for monitor_state in monitor_states.values_mut() {
+            egl_instance.make_current(
+                monitor_state.egl_display,
+                Some(monitor_state.egl_surface),
+                Some(monitor_state.egl_surface),
+                Some(monitor_state.egl_context),
+            )?;
+
+            monitor_state.renderer.draw(
+                &mut fifo_reader,
+                monitor_state.output_info.width,
+                monitor_state.output_info.height,
+            )?;
+
+            egl_instance.swap_buffers(monitor_state.egl_display, monitor_state.egl_surface)?;
+        }
 
         if fps > 0 {
             let frame_time = utils::get_time_millis() - frame_start;

@@ -20,27 +20,21 @@ mod gl_bindings {
     about = "A Wayland wallpaper daemon with OpenGL ES shader support for images, videos, and shaders"
 )]
 struct Args {
-    /// Fork papyrust-daemon
     #[arg(short = 'F', long)]
     fork: bool,
 
-    /// Set the FPS to render at
     #[arg(short, long, default_value = "0")]
     fps: u16,
 
-    /// Specify layer to run on
     #[arg(short, long)]
     layer: Option<String>,
 
-    /// The width to render at
     #[arg(short = 'W', long, default_value = "0")]
     width: u16,
 
-    /// The height to render at
     #[arg(short = 'H', long, default_value = "0")]
     height: u16,
 
-    /// The path to mpd's fifo file
     #[arg(short = 'M', long)]
     fifo: Option<String>,
 }
@@ -57,9 +51,9 @@ fn main() -> Result<()> {
                 process::exit(0);
             }
             if pid == 0 {
-                libc::close(0); // stdin
-                libc::close(1); // stdout
-                libc::close(2); // stderr
+                libc::close(0);
+                libc::close(1);
+                libc::close(2);
             }
         }
     }
@@ -77,10 +71,7 @@ fn main() -> Result<()> {
 
     info!("Starting Papyrust daemon");
 
-    let monitor = "";
-
     paper::init(
-        monitor,
         init_media,
         args.fps,
         args.layer.as_deref(),
