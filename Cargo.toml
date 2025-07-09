@@ -42,7 +42,7 @@ unsafe_op_in_unsafe_fn = "allow"
 
 [[bin]]
 name = "papyrust-daemon"
-path = "src/daemon/main.rs"
+path = "src/bin/daemon/main.rs"
 
 [[bin]]
 name = "papyrust-cli"
