@@ -9,8 +9,9 @@ use iced::{Alignment, Padding, Task};
 use image::{imageops, load_from_memory, RgbaImage};
 use tokio::{fs, task};
 
-use crate::library::{loader::Loader, project::Project};
-use crate::{library, Message, Papyrust};
+use crate::ui::loader::project::{Project, ProjectType};
+use crate::ui::loader::Loader;
+use crate::{Message, Papyrust};
 
 pub struct Library {
     pub projects: Vec<Project>,
@@ -33,7 +34,7 @@ impl Library {
             match result {
                 Ok(project) => {
                     // Skip for now all non-video projects
-                    if project.meta.file_type != Some(library::project::ProjectType::Video) {
+                    if project.meta.file_type != Some(ProjectType::Video) {
                         continue;
                     }
                     projects.push(project);
@@ -171,7 +172,7 @@ impl Library {
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let lib = &app.library;
-    let grid = super::view::create_grid(&app, &lib.projects, &lib.preview);
+    let grid = crate::ui::view::create_grid(&app, &lib.projects, &lib.preview);
 
     container(scrollable(column![text("Library").size(30), grid]))
         .padding(20)

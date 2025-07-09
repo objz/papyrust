@@ -5,7 +5,7 @@ use iced::{
 };
 use iced_video_player::VideoPlayer;
 
-use crate::{library::project::Project, Message, Papyrust};
+use crate::{ui::loader::project::Project, Message, Papyrust};
 
 pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");

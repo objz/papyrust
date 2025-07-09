@@ -1,6 +1,7 @@
+use crate::ui::loader::project::{Project, ProjectMeta};
 use std::{fs, path::PathBuf};
 
-use super::project::{Project, ProjectMeta};
+pub mod project;
 
 const WALLPAPER_ENGINE_ID: &str = "431960";
 const WORKSHOP_PATHS: [&str; 4] = [

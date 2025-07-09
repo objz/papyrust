@@ -5,7 +5,7 @@ use iced::{
 
 use crate::Message;
 
-use super::state::Page;
+use crate::ui::state::Page;
 
 pub fn build(_app: &crate::Papyrust) -> Element<Message> {
     let library = Button::new(text("Library"))

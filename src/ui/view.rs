@@ -5,9 +5,9 @@ use iced::{
 };
 use iced_aw::Wrap;
 
-use crate::{library::project::Project, Message, Papyrust};
+use crate::{ui::loader::project::Project, Message, Papyrust};
 
-use super::{discover, library, panel, popup, state};
+use super::{components::panel, pages::discover, pages::library, popup, state};
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let content = match app.current_page {

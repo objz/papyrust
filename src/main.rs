@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use iced::{Element, Font, Settings, Subscription, Task};
 use iced_video_player::Video;
-use library::project::Project;
 use ui::state;
 
-mod library;
 mod ui;
 
-use ui::library::Library;
+use ui::pages::library::Library;
 use ui::{state::Page, view};
+
+use crate::ui::loader::project::Project;
 
 pub struct Papyrust {
     pub current_page: Page,
