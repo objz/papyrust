@@ -17,6 +17,22 @@ shellexpand = "3.1.1"
 tokio = { version = "1.45.1", features = ["fs"] }
 url = "2.5.4"
 
+clap = { version = "4.4", features = ["derive"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.2", features = ["client"] }
+wayland-egl = "0.32"
+khronos-egl = { version = "6.0", features = ["static"] }
+gl = "0.14"
+libc = "0.2"
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+ffmpeg-next = "7.1.0"
+
+[build-dependencies]
+gl_generator = "0.14"
 
 [profile.release]
 debug = true
