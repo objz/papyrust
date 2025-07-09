@@ -45,23 +45,27 @@ shaders/
   rainbow.frag
 src/
   bin/
+    daemon/
+      ipc.rs
+      main.rs
+      media.rs
+      paper.rs
+      utils.rs
     cli.rs
-  daemon/
-    ipc.rs
-    main.rs
-    media.rs
-    paper.rs
-    utils.rs
-  library/
-    loader.rs
-    mod.rs
-    project.rs
   ui/
-    discover.rs
-    library.rs
+    components/
+      lib_popup.rs
+      mod.rs
+      panel.rs
+    loader/
+      mod.rs
+      project.rs
+    pages/
+      discover.rs
+      library.rs
+      mod.rs
+    ipc.rs
     mod.rs
-    panel.rs
-    popup.rs
     state.rs
     view.rs
   main.rs
@@ -118,290 +122,7 @@ void main() {
 }
 </file>
 
-<file path="src/daemon/utils.rs">
-use std::thread;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-pub fn get_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
-pub fn sleep_millis(millis: u64) {
-    if millis > 0 {
-        thread::sleep(Duration::from_millis(millis));
-    }
-}
-</file>
-
-<file path="src/ui/discover.rs">
-use iced::Element;
-
-use crate::{Message, Papyrust};
-
-pub fn build(_app: &Papyrust) -> Element<Message> {
-    iced::widget::text("Discover").into()
-}
-</file>
-
-<file path="build.rs">
-use gl_generator::{Api, Fallbacks, Profile, Registry};
-use std::env;
-use std::fs::File;
-use std::path::Path;
-
-fn main() {
-    let dest = env::var("OUT_DIR").unwrap();
-    let mut file = File::create(&Path::new(&dest).join("gl_bindings.rs")).unwrap();
-
-    Registry::new(Api::Gles2, (3, 0), Profile::Core, Fallbacks::All, [])
-        .write_bindings(gl_generator::GlobalGenerator, &mut file)
-        .unwrap();
-}
-</file>
-
-<file path="src/bin/cli.rs">
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use serde_json;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-
-#[derive(Parser)]
-#[command(name = "papyrust")]
-#[command(about = "A small cli for papyrust-daemon")]
-struct Args {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    Image {
-        path: String,
-        #[arg(long)]
-        shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-    Video {
-        path: String,
-        #[arg(long)]
-        shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-    Shader {
-        path: String,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-    Status,
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
-
-    let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
-
-    let command = match args.command {
-        Commands::Image {
-            path,
-            shader,
-            monitor,
-        } => {
-            serde_json::json!({
-                "SetImage": {
-                    "path": path,
-                    "shader": shader,
-                    "monitor": monitor
-                }
-            })
-        }
-        Commands::Video {
-            path,
-            shader,
-            monitor,
-        } => {
-            serde_json::json!({
-                "SetVideo": {
-                    "path": path,
-                    "shader": shader,
-                    "monitor": monitor
-                }
-            })
-        }
-        Commands::Shader { path, monitor } => {
-            serde_json::json!({
-                "SetShader": {
-                    "path": path,
-                    "monitor": monitor
-                }
-            })
-        }
-        Commands::Status => {
-            serde_json::json!("GetStatus")
-        }
-    };
-
-    writeln!(stream, "{}", command)?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-
-    println!("{}", response.trim());
-
-    Ok(())
-}
-</file>
-
-<file path="src/daemon/ipc.rs">
-use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::mpsc::Sender;
-use std::thread;
-
-use crate::media::MediaType;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum IpcCommand {
-    SetImage {
-        path: String,
-        shader: Option<String>,
-        monitor: Option<String>,
-    },
-    SetVideo {
-        path: String,
-        shader: Option<String>,
-        monitor: Option<String>,
-    },
-    SetShader {
-        path: String,
-        monitor: Option<String>,
-    },
-    GetStatus,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum IpcResponse {
-    Success,
-    Error { message: String },
-    Status { current_media: String },
-}
-
-#[derive(Debug, Clone)]
-pub struct MediaChange {
-    pub media_type: MediaType,
-    pub monitor: Option<String>,
-}
-
-pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
-    let socket_path = "/tmp/papyrust-daemon.sock";
-
-    let _ = std::fs::remove_file(socket_path);
-
-    let listener =
-        UnixListener::bind(socket_path).map_err(|e| anyhow!("Failed to bind IPC socket: {}", e))?;
-
-    println!("IPC server listening on {}", socket_path);
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let tx_clone = tx.clone();
-                thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, tx_clone) {
-                        eprintln!("Client error: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                eprintln!("Connection failed: {}", e);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
-    let mut reader = BufReader::new(&stream);
-    let mut writer = stream.try_clone()?;
-    let mut line = String::new();
-
-    while reader.read_line(&mut line)? > 0 {
-        let command: IpcCommand = serde_json::from_str(&line.trim())
-            .map_err(|e| anyhow!("Invalid JSON command: {}", e))?;
-
-        let response = match command {
-            IpcCommand::SetImage {
-                path,
-                shader,
-                monitor,
-            } => {
-                let media_change = MediaChange {
-                    media_type: MediaType::Image { path, shader },
-                    monitor,
-                };
-                match tx.send(media_change) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
-            }
-            IpcCommand::SetVideo {
-                path,
-                shader,
-                monitor,
-            } => {
-                let media_change = MediaChange {
-                    media_type: MediaType::Video { path, shader },
-                    monitor,
-                };
-                match tx.send(media_change) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
-            }
-            IpcCommand::SetShader { path, monitor } => {
-                let media_change = MediaChange {
-                    media_type: MediaType::Shader(path),
-                    monitor,
-                };
-                match tx.send(media_change) {
-                    Ok(_) => IpcResponse::Success,
-                    Err(e) => IpcResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
-            }
-            IpcCommand::GetStatus => IpcResponse::Status {
-                current_media: "Unknown".to_string(),
-            },
-        };
-
-        let response_json = serde_json::to_string(&response)?;
-        writeln!(writer, "{}", response_json)?;
-        writer.flush()?;
-
-        line.clear();
-    }
-
-    Ok(())
-}
-</file>
-
-<file path="src/daemon/media.rs">
+<file path="src/bin/daemon/media.rs">
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ffmpeg;
 use std::fs::File;
@@ -737,100 +458,7 @@ void main() {
 }
 </file>
 
-<file path="src/library/mod.rs">
-pub mod loader;
-pub mod project;
-</file>
-
-<file path="src/daemon/main.rs">
-use anyhow::Result;
-use clap::Parser;
-use log::info;
-use std::process;
-use std::sync::mpsc;
-use std::thread;
-
-mod ipc;
-mod media;
-mod paper;
-mod utils;
-mod gl_bindings {
-    include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
-}
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "papyrust-daemon",
-    version = "0.1.0",
-    about = "A Wayland wallpaper daemon with OpenGL ES shader support for images, videos, and shaders"
-)]
-struct Args {
-    #[arg(short = 'F', long)]
-    fork: bool,
-
-    #[arg(short, long, default_value = "0")]
-    fps: u16,
-
-    #[arg(short, long)]
-    layer: Option<String>,
-
-    #[arg(short = 'W', long, default_value = "0")]
-    width: u16,
-
-    #[arg(short = 'H', long, default_value = "0")]
-    height: u16,
-
-    #[arg(short = 'M', long)]
-    fifo: Option<String>,
-}
-
-fn main() -> Result<()> {
-    env_logger::init();
-
-    let args = Args::parse();
-
-    if args.fork {
-        unsafe {
-            let pid = libc::fork();
-            if pid > 0 {
-                process::exit(0);
-            }
-            if pid == 0 {
-                libc::close(0);
-                libc::close(1);
-                libc::close(2);
-            }
-        }
-    }
-
-    let (tx, rx) = mpsc::channel();
-
-    let ipc_tx = tx.clone();
-    thread::spawn(move || {
-        if let Err(e) = ipc::start_server(ipc_tx) {
-            eprintln!("IPC server error: {}", e);
-        }
-    });
-
-    let init_media = media::MediaType::Shader("default".to_string());
-
-    info!("Starting Papyrust daemon");
-
-    paper::init(
-        init_media,
-        args.fps,
-        args.layer.as_deref(),
-        args.width,
-        args.height,
-        args.fifo.as_deref(),
-        rx,
-    )?;
-
-    Ok(())
-}
-</file>
-
-<file path="src/daemon/paper.rs">
+<file path="src/bin/daemon/paper.rs">
 use anyhow::{anyhow, Result};
 use khronos_egl as egl;
 use log::{debug, info};
@@ -1880,166 +1508,26 @@ pub fn init(
 }
 </file>
 
-<file path="src/library/project.rs">
-use serde::Deserialize;
+<file path="src/bin/daemon/utils.rs">
+use std::thread;
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ProjectType {
-    #[serde(alias = "Web")]
-    Web,
-    #[serde(alias = "Video")]
-    Video,
-    #[serde(alias = "Application")]
-    Application,
-    #[serde(alias = "Scene")]
-    Scene,
+pub fn get_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct ProjectMeta {
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub tags: Option<Vec<String>>,
-    #[serde(rename = "type")]
-    pub file_type: Option<ProjectType>,
-    pub preview: Option<String>,
-    pub file: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Project {
-    pub meta: ProjectMeta,
-    pub path: String,
-}
-</file>
-
-<file path="src/ui/mod.rs">
-pub mod discover;
-pub mod library;
-pub mod panel;
-pub mod popup;
-pub mod state;
-pub mod view;
-</file>
-
-<file path="src/library/loader.rs">
-use std::{fs, path::PathBuf};
-
-use super::project::{Project, ProjectMeta};
-
-const WALLPAPER_ENGINE_ID: &str = "431960";
-const WORKSHOP_PATHS: [&str; 4] = [
-    "~/.steam/steam/steamapps/workshop",
-    "~/.local/share/Steam/steamapps/workshop",
-    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
-    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
-];
-
-fn resolve_paths() -> Vec<PathBuf> {
-    WORKSHOP_PATHS
-        .iter()
-        .map(|p| shellexpand::tilde(p).to_string())
-        .map(PathBuf::from)
-        .filter(|p| p.exists())
-        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
-        .filter(|p| p.exists())
-        .collect()
-}
-
-pub struct Loader {
-    project_paths: Vec<PathBuf>,
-    current: usize,
-}
-
-impl Loader {
-    pub fn new() -> Self {
-        let mut paths = Vec::new();
-
-        for base in resolve_paths() {
-            if let Ok(entries) = fs::read_dir(base) {
-                for entry in entries.flatten() {
-                    let dir = entry.path();
-                    if dir.is_dir() && dir.join("project.json").exists() {
-                        paths.push(dir);
-                    }
-                }
-            }
-        }
-
-        Loader {
-            project_paths: paths,
-            current: 0,
-        }
-    }
-
-    pub fn next(&mut self) -> Option<Result<Project, String>> {
-        if self.current >= self.project_paths.len() {
-            None
-        } else {
-            let dir = self.project_paths[self.current].clone();
-            self.current += 1;
-            let path = dir.join("project.json");
-            Some(parse(&path, &dir))
-        }
+pub fn sleep_millis(millis: u64) {
+    if millis > 0 {
+        thread::sleep(Duration::from_millis(millis));
     }
 }
-
-fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-
-    let meta: ProjectMeta = serde_json::from_str(&content)
-        .map_err(|e| format!("JSON parse error in {}: {}", path.display(), e))?;
-
-    Ok(Project {
-        meta,
-        path: dir.to_string_lossy().to_string(),
-    })
-}
 </file>
 
-<file path="src/ui/panel.rs">
-use iced::{
-    widget::{text, Button, Container, Row},
-    Alignment, Element, Padding,
-};
-
-use crate::Message;
-
-use super::state::Page;
-
-pub fn build(_app: &crate::Papyrust) -> Element<Message> {
-    let library = Button::new(text("Library"))
-        .on_press(Message::SwitchPage(Page::Library))
-        .padding(Padding::from([8, 16]));
-
-    let discover = Button::new(text("Discover"))
-        .on_press(Message::SwitchPage(Page::Discover))
-        .padding(Padding::from([8, 16]));
-
-    let content = Row::new()
-        .push(library)
-        .push(discover)
-        .spacing(15)
-        .align_y(Alignment::Center);
-
-    Container::new(content)
-        .padding(Padding::from([10, 20]))
-        .into()
-}
-</file>
-
-<file path=".gitignore">
-/target
-repomix-output.xml
-flamegraph.svg
-perf.data
-perf.data.old
-stacks.folded
-</file>
-
-<file path="src/ui/popup.rs">
+<file path="src/ui/components/lib_popup.rs">
 use iced::{
     alignment::{Horizontal, Vertical},
     widget::{button, mouse_area, text, Button, Column, Container, Row, Space},
@@ -2047,7 +1535,7 @@ use iced::{
 };
 use iced_video_player::VideoPlayer;
 
-use crate::{library::project::Project, Message, Papyrust};
+use crate::{ui::loader::project::Project, Message, Papyrust};
 
 pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
     let title = project.meta.title.as_deref().unwrap_or("Untitled");
@@ -2082,6 +1570,7 @@ pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message
 
     let apply_button = Button::new(text("Apply").size(16))
         .padding(Padding::from([8, 12]))
+        .on_press(Message::ApplyProject(project.clone()))
         .style(|_theme, status| {
             let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
             let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
@@ -2263,204 +1752,159 @@ fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Me
 }
 </file>
 
-<file path="src/ui/view.rs">
+<file path="src/ui/components/panel.rs">
 use iced::{
-    alignment::{Horizontal, Vertical},
-    widget::{image::Handle, Column, Container, Stack},
-    Element, Length, Padding,
+    widget::{text, Button, Container, Row},
+    Alignment, Element, Padding,
 };
-use iced_aw::Wrap;
 
-use crate::{library::project::Project, Message, Papyrust};
+use crate::Message;
 
-use super::{discover, library, panel, popup, state};
+use crate::ui::state::Page;
 
-pub fn build(app: &Papyrust) -> Element<Message> {
-    let content = match app.current_page {
-        state::Page::Discover => discover::build(app),
-        state::Page::Library => library::build(app),
-    };
+pub fn build(_app: &crate::Papyrust) -> Element<Message> {
+    let library = Button::new(text("Library"))
+        .on_press(Message::SwitchPage(Page::Library))
+        .padding(Padding::from([8, 16]));
 
-    let main = Column::new()
-        .push(content)
-        .width(Length::Fill)
-        .height(Length::Fill);
+    let discover = Button::new(text("Discover"))
+        .on_press(Message::SwitchPage(Page::Discover))
+        .padding(Padding::from([8, 16]));
 
-    let panel = Container::new(panel::build(app))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(Padding {
-            top: 0.0,
-            right: 20.0,
-            bottom: 0.0,
-            left: 0.0,
-        })
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Bottom);
+    let content = Row::new()
+        .push(library)
+        .push(discover)
+        .spacing(15)
+        .align_y(Alignment::Center);
 
-    let main_content = Column::new().push(main).push(
-        Container::new(panel)
-            .width(Length::Fill)
-            .height(Length::Fixed(80.0)),
-    );
-
-    if let Some(ref project) = app.popup_state {
-        Stack::new()
-            .push(main_content)
-            .push(popup::build(app, project))
-            .into()
-    } else {
-        main_content.into()
-    }
-}
-
-pub fn create_grid<'a>(
-    app: &'a Papyrust,
-    projects: &'a [Project],
-    preview: &'a [Option<Handle>],
-) -> Element<'a, Message> {
-    let mut items = Vec::new();
-
-    for (idx, project) in projects.iter().enumerate() {
-        let handle = preview.get(idx).and_then(Clone::clone);
-        items.push(library::render_item(app, project, handle));
-    }
-
-    Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
-        .width(Length::Fill)
-        .padding(8)
+    Container::new(content)
+        .padding(Padding::from([10, 20]))
         .into()
 }
 </file>
 
-<file path="src/ui/state.rs">
-use iced::{widget::image::Handle, Task};
+<file path="src/ui/loader/mod.rs">
+use crate::ui::loader::project::{Project, ProjectMeta};
+use std::{fs, path::PathBuf};
+
+pub mod project;
+
+const WALLPAPER_ENGINE_ID: &str = "431960";
+const WORKSHOP_PATHS: [&str; 4] = [
+    "~/.steam/steam/steamapps/workshop",
+    "~/.local/share/Steam/steamapps/workshop",
+    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
+    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
+];
+
+fn resolve_paths() -> Vec<PathBuf> {
+    WORKSHOP_PATHS
+        .iter()
+        .map(|p| shellexpand::tilde(p).to_string())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+pub struct Loader {
+    project_paths: Vec<PathBuf>,
+    current: usize,
+}
+
+impl Loader {
+    pub fn new() -> Self {
+        let mut paths = Vec::new();
+
+        for base in resolve_paths() {
+            if let Ok(entries) = fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    if dir.is_dir() && dir.join("project.json").exists() {
+                        paths.push(dir);
+                    }
+                }
+            }
+        }
+
+        Loader {
+            project_paths: paths,
+            current: 0,
+        }
+    }
+
+    pub fn next(&mut self) -> Option<Result<Project, String>> {
+        if self.current >= self.project_paths.len() {
+            None
+        } else {
+            let dir = self.project_paths[self.current].clone();
+            self.current += 1;
+            let path = dir.join("project.json");
+            Some(parse(&path, &dir))
+        }
+    }
+}
+
+fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+    let meta: ProjectMeta = serde_json::from_str(&content)
+        .map_err(|e| format!("JSON parse error in {}: {}", path.display(), e))?;
+
+    Ok(Project {
+        meta,
+        path: dir.to_string_lossy().to_string(),
+    })
+}
+</file>
+
+<file path="src/ui/loader/project.rs">
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectType {
+    #[serde(alias = "Web")]
+    Web,
+    #[serde(alias = "Video")]
+    Video,
+    #[serde(alias = "Application")]
+    Application,
+    #[serde(alias = "Scene")]
+    Scene,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ProjectMeta {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    #[serde(rename = "type")]
+    pub file_type: Option<ProjectType>,
+    pub preview: Option<String>,
+    pub file: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Project {
+    pub meta: ProjectMeta,
+    pub path: String,
+}
+</file>
+
+<file path="src/ui/pages/discover.rs">
+use iced::Element;
 
 use crate::{Message, Papyrust};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Discover,
-    Library,
-}
-
-impl Default for Page {
-    fn default() -> Self {
-        Page::Library
-    }
-}
-
-pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
-    match message {
-        Message::SwitchPage(page) => {
-            app.current_page = page;
-            if page == Page::Library {
-                return app.library.next().unwrap_or_else(Task::none);
-            }
-            Task::none()
-        }
-        Message::PreviewDecoded(idx, w, h, pixels) => {
-            let handle = Handle::from_rgba(w, h, pixels);
-            app.library.preview[idx] = Some(handle);
-            app.library.next().unwrap_or_else(Task::none)
-        }
-        Message::PreviewError(_idx) => app.library.next().unwrap_or_else(Task::none),
-        Message::Tick => {
-            app.tick();
-            Task::none()
-        }
-        Message::OpenPopup(project) => {
-            app.popup_state = Some(project.clone());
-
-            if let Some(file_name) = &project.meta.file {
-                let video_path = format!("{}/{}", project.path, file_name);
-                if app.should_load(&video_path) {
-                    return Papyrust::load_video_async(video_path);
-                }
-            }
-            Task::none()
-        }
-        Message::ClosePopup => {
-            for video in app.videos.values_mut() {
-                video.set_paused(true);
-            }
-            app.popup_state = None;
-            Task::none()
-        }
-        Message::LoadVideo(path) => {
-            app.load_video(&path);
-            Task::none()
-        }
-        Message::VideoLoaded(path) => {
-            app.load_video(&path);
-            Task::none()
-        }
-        Message::VideoError(path, error) => {
-            eprintln!("Failed to load video {}: {}", path, error);
-            Task::none()
-        }
-        Message::DoNothing => Task::none(),
-    }
+pub fn build(_app: &Papyrust) -> Element<Message> {
+    iced::widget::text("Discover").into()
 }
 </file>
 
-<file path="Cargo.toml">
-[package]
-name = "papyrust"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-derive = "1.0.0"
-fast_image_resize = { version = "5.1.4", features = ["image"] }
-futures = "0.3.31"
-iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
-iced_aw = { version = "0.12.2", features = ["wrap"] }
-iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
-image = "0.25.6"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-shellexpand = "3.1.1"
-tokio = { version = "1.45.1", features = ["fs"] }
-url = "2.5.4"
-
-clap = { version = "4.4", features = ["derive"] }
-wayland-client = "0.31"
-wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
-wayland-protocols-wlr = { version = "0.2", features = ["client"] }
-wayland-egl = "0.32"
-khronos-egl = { version = "6.0", features = ["static"] }
-gl = "0.14"
-libc = "0.2"
-anyhow = "1.0"
-thiserror = "1.0"
-log = "0.4"
-env_logger = "0.10"
-ffmpeg-next = "7.1.0"
-
-[build-dependencies]
-gl_generator = "0.14"
-
-[profile.release]
-debug = true
-
-[lints.rust]
-unsafe_op_in_unsafe_fn = "allow"
-
-[[bin]]
-name = "papyrust-daemon"
-path = "src/daemon/main.rs"
-
-[[bin]]
-name = "papyrust-cli"
-path = "src/bin/cli.rs"
-
-[[bin]]
-name = "papyrust"
-path = "src/main.rs"
-</file>
-
-<file path="src/ui/library.rs">
+<file path="src/ui/pages/library.rs">
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::image::Handle;
 use iced::widget::{Button, Column, Container};
@@ -2472,8 +1916,9 @@ use iced::{Alignment, Padding, Task};
 use image::{imageops, load_from_memory, RgbaImage};
 use tokio::{fs, task};
 
-use crate::library::{loader::Loader, project::Project};
-use crate::{library, Message, Papyrust};
+use crate::ui::loader::project::{Project, ProjectType};
+use crate::ui::loader::Loader;
+use crate::{Message, Papyrust};
 
 pub struct Library {
     pub projects: Vec<Project>,
@@ -2496,7 +1941,7 @@ impl Library {
             match result {
                 Ok(project) => {
                     // Skip for now all non-video projects
-                    if project.meta.file_type != Some(library::project::ProjectType::Video) {
+                    if project.meta.file_type != Some(ProjectType::Video) {
                         continue;
                     }
                     projects.push(project);
@@ -2634,7 +2079,7 @@ impl Library {
 
 pub fn build(app: &Papyrust) -> Element<Message> {
     let lib = &app.library;
-    let grid = super::view::create_grid(&app, &lib.projects, &lib.preview);
+    let grid = crate::ui::view::create_grid(&app, &lib.projects, &lib.preview);
 
     container(scrollable(column![text("Library").size(30), grid]))
         .padding(20)
@@ -2776,19 +2221,630 @@ fn create_preview<'a>(
 }
 </file>
 
+<file path="src/ui/pages/mod.rs">
+pub mod discover;
+pub mod library;
+</file>
+
+<file path="src/ui/ipc.rs">
+use anyhow::Result;
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
+
+pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+    let cmd = json!({
+        "SetImage": {
+            "path": path,
+            "shader": shader,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+    let cmd = json!({
+        "SetVideo": {
+            "path": path,
+            "shader": shader,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+pub fn set_shader(monitor: String, path: String) -> Result<()> {
+    let cmd = json!({
+        "SetShader": {
+            "path": path,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+fn send_command(cmd: serde_json::Value) -> Result<()> {
+    let mut stream = UnixStream::connect(SOCKET_PATH)?;
+    writeln!(stream, "{}", cmd)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    println!("{}", response.trim());
+    Ok(())
+}
+</file>
+
+<file path="build.rs">
+use gl_generator::{Api, Fallbacks, Profile, Registry};
+use std::env;
+use std::fs::File;
+use std::path::Path;
+
+fn main() {
+    let dest = env::var("OUT_DIR").unwrap();
+    let mut file = File::create(&Path::new(&dest).join("gl_bindings.rs")).unwrap();
+
+    Registry::new(Api::Gles2, (3, 0), Profile::Core, Fallbacks::All, [])
+        .write_bindings(gl_generator::GlobalGenerator, &mut file)
+        .unwrap();
+}
+</file>
+
+<file path="src/bin/daemon/ipc.rs">
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::thread;
+
+use crate::media::MediaType;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum IpcCommand {
+    SetImage {
+        path: String,
+        shader: Option<String>,
+        monitor: Option<String>,
+    },
+    SetVideo {
+        path: String,
+        shader: Option<String>,
+        monitor: Option<String>,
+    },
+    SetShader {
+        path: String,
+        monitor: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum IpcResponse {
+    Success,
+    Error { message: String },
+    Status { current_media: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaChange {
+    pub media_type: MediaType,
+    pub monitor: Option<String>,
+}
+
+pub fn start_server() -> Result<()> {
+    let socket_path = "/tmp/papyrust-daemon.sock";
+
+    let _ = std::fs::remove_file(socket_path);
+
+    let listener =
+        UnixListener::bind(socket_path).map_err(|e| anyhow!("Failed to bind IPC socket: {}", e))?;
+
+    println!("IPC server listening on {}", socket_path);
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                thread::spawn(move || {
+                    if let Err(e) = handle_client(stream) {
+                        eprintln!("Client error: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!("Connection failed: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_client(stream: UnixStream) -> Result<()> {
+    let mut reader = BufReader::new(&stream);
+    let mut writer = stream.try_clone()?;
+    let mut line = String::new();
+
+    while reader.read_line(&mut line)? > 0 {
+        let command: IpcCommand = serde_json::from_str(&line.trim())
+            .map_err(|e| anyhow!("Invalid JSON command: {}", e))?;
+
+        let response = match command {
+            IpcCommand::SetImage {
+                path,
+                shader,
+                monitor,
+            } => {
+                MediaChange {
+                    media_type: MediaType::Image { path, shader },
+                    monitor,
+                };
+            }
+            IpcCommand::SetVideo {
+                path,
+                shader,
+                monitor,
+            } => {
+                MediaChange {
+                    media_type: MediaType::Video { path, shader },
+                    monitor,
+                };
+            }
+            IpcCommand::SetShader { path, monitor } => {
+                MediaChange {
+                    media_type: MediaType::Shader(path),
+                    monitor,
+                };
+            }
+        };
+
+        let response_json = serde_json::to_string(&response)?;
+        writeln!(writer, "{}", response_json)?;
+        writer.flush()?;
+
+        line.clear();
+    }
+
+    Ok(())
+}
+</file>
+
+<file path="src/bin/daemon/main.rs">
+use anyhow::Result;
+use clap::Parser;
+use log::info;
+use std::process;
+use std::sync::mpsc;
+use std::thread;
+
+mod ipc;
+mod media;
+mod paper;
+mod utils;
+mod gl_bindings {
+    include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "papyrust-daemon",
+    version = "0.1.0",
+    about = "A Wayland wallpaper daemon with OpenGL ES shader support for images, videos, and shaders"
+)]
+struct Args {
+    #[arg(short = 'F', long)]
+    fork: bool,
+
+    #[arg(short, long, default_value = "0")]
+    fps: u16,
+
+    #[arg(short, long)]
+    layer: Option<String>,
+
+    #[arg(short = 'W', long, default_value = "0")]
+    width: u16,
+
+    #[arg(short = 'H', long, default_value = "0")]
+    height: u16,
+
+    #[arg(short = 'M', long)]
+    fifo: Option<String>,
+}
+
+fn main() -> Result<()> {
+    env_logger::init();
+
+    let args = Args::parse();
+
+    if args.fork {
+        unsafe {
+            let pid = libc::fork();
+            if pid > 0 {
+                process::exit(0);
+            }
+            if pid == 0 {
+                libc::close(0);
+                libc::close(1);
+                libc::close(2);
+            }
+        }
+    }
+
+    let (_tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        if let Err(e) = ipc::start_server() {
+            eprintln!("IPC server error: {}", e);
+        }
+    });
+
+    let init_media = media::MediaType::Shader("default".to_string());
+
+    info!("Starting Papyrust daemon");
+
+    paper::init(
+        init_media,
+        args.fps,
+        args.layer.as_deref(),
+        args.width,
+        args.height,
+        args.fifo.as_deref(),
+        rx,
+    )?;
+
+    Ok(())
+}
+</file>
+
+<file path="src/ui/components/mod.rs">
+pub mod lib_popup;
+pub mod panel;
+</file>
+
+<file path="src/bin/cli.rs">
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use serde_json;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+#[derive(Parser)]
+#[command(name = "papyrust")]
+#[command(about = "A small cli for papyrust-daemon")]
+struct Args {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Image {
+        path: String,
+        #[arg(long)]
+        shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+    Video {
+        path: String,
+        #[arg(long)]
+        shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+    Shader {
+        path: String,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
+
+    let command = match args.command {
+        Commands::Image {
+            path,
+            shader,
+            monitor,
+        } => {
+            serde_json::json!({
+                "SetImage": {
+                    "path": path,
+                    "shader": shader,
+                    "monitor": monitor
+                }
+            })
+        }
+        Commands::Video {
+            path,
+            shader,
+            monitor,
+        } => {
+            serde_json::json!({
+                "SetVideo": {
+                    "path": path,
+                    "shader": shader,
+                    "monitor": monitor
+                }
+            })
+        }
+        Commands::Shader { path, monitor } => {
+            serde_json::json!({
+                "SetShader": {
+                    "path": path,
+                    "monitor": monitor
+                }
+            })
+        }
+    };
+
+    writeln!(stream, "{}", command)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    println!("{}", response.trim());
+
+    Ok(())
+}
+</file>
+
+<file path=".gitignore">
+/target
+repomix-output.xml
+flamegraph.svg
+perf.data
+perf.data.old
+stacks.folded
+</file>
+
+<file path="src/ui/mod.rs">
+pub mod components;
+pub mod ipc;
+pub mod loader;
+pub mod pages;
+pub mod state;
+pub mod view;
+</file>
+
+<file path="src/ui/view.rs">
+use iced::{
+    alignment::{Horizontal, Vertical},
+    widget::{image::Handle, Column, Container, Stack},
+    Element, Length, Padding,
+};
+use iced_aw::Wrap;
+
+use crate::{ui::loader::project::Project, Message, Papyrust};
+
+use super::{components::lib_popup, components::panel, pages::discover, pages::library, state};
+
+pub fn build(app: &Papyrust) -> Element<Message> {
+    let content = match app.current_page {
+        state::Page::Discover => discover::build(app),
+        state::Page::Library => library::build(app),
+    };
+
+    let main = Column::new()
+        .push(content)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    let panel = Container::new(panel::build(app))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Bottom);
+
+    let main_content = Column::new().push(main).push(
+        Container::new(panel)
+            .width(Length::Fill)
+            .height(Length::Fixed(80.0)),
+    );
+
+    if let Some(ref project) = app.popup_state {
+        Stack::new()
+            .push(main_content)
+            .push(lib_popup::build(app, project))
+            .into()
+    } else {
+        main_content.into()
+    }
+}
+
+pub fn create_grid<'a>(
+    app: &'a Papyrust,
+    projects: &'a [Project],
+    preview: &'a [Option<Handle>],
+) -> Element<'a, Message> {
+    let mut items = Vec::new();
+
+    for (idx, project) in projects.iter().enumerate() {
+        let handle = preview.get(idx).and_then(Clone::clone);
+        items.push(library::render_item(app, project, handle));
+    }
+
+    Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
+        .width(Length::Fill)
+        .padding(8)
+        .into()
+}
+</file>
+
+<file path="src/ui/state.rs">
+use iced::{widget::image::Handle, Task};
+
+use crate::{Message, Papyrust};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Discover,
+    Library,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Page::Library
+    }
+}
+
+pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
+    match message {
+        Message::SwitchPage(page) => {
+            app.current_page = page;
+            if page == Page::Library {
+                return app.library.next().unwrap_or_else(Task::none);
+            }
+            Task::none()
+        }
+        Message::PreviewDecoded(idx, w, h, pixels) => {
+            let handle = Handle::from_rgba(w, h, pixels);
+            app.library.preview[idx] = Some(handle);
+            app.library.next().unwrap_or_else(Task::none)
+        }
+        Message::PreviewError(_idx) => app.library.next().unwrap_or_else(Task::none),
+        Message::Tick => {
+            app.tick();
+            Task::none()
+        }
+        Message::OpenPopup(project) => {
+            app.popup_state = Some(project.clone());
+
+            if let Some(file_name) = &project.meta.file {
+                let video_path = format!("{}/{}", project.path, file_name);
+                if app.should_load(&video_path) {
+                    return Papyrust::load_video_async(video_path);
+                }
+            }
+            Task::none()
+        }
+        Message::ClosePopup => {
+            for video in app.videos.values_mut() {
+                video.set_paused(true);
+            }
+            app.popup_state = None;
+            Task::none()
+        }
+        Message::ApplyProject(project) => {
+            if let Some(popup) = &app.popup_state {
+                if popup.path == project.path {
+                    app.popup_state = Some(project.clone());
+                }
+            } else {
+                app.popup_state = Some(project.clone());
+            }
+
+            if let Some(file_name) = &project.meta.file {
+                let video_path = format!("{}/{}", project.path, file_name);
+                crate::ui::ipc::set_video("DP-3".to_string(), video_path, None).unwrap_or_else(
+                    |e| {
+                        eprintln!("Failed to set video: {}", e);
+                    },
+                );
+            }
+            Task::none()
+        }
+        Message::LoadVideo(path) => {
+            app.load_video(&path);
+            Task::none()
+        }
+        Message::VideoLoaded(path) => {
+            app.load_video(&path);
+            Task::none()
+        }
+        Message::VideoError(path, error) => {
+            eprintln!("Failed to load video {}: {}", path, error);
+            Task::none()
+        }
+        Message::DoNothing => Task::none(),
+    }
+}
+</file>
+
+<file path="Cargo.toml">
+[package]
+name = "papyrust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive = "1.0.0"
+fast_image_resize = { version = "5.1.4", features = ["image"] }
+futures = "0.3.31"
+iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
+iced_aw = { version = "0.12.2", features = ["wrap"] }
+iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
+image = "0.25.6"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+shellexpand = "3.1.1"
+tokio = { version = "1.45.1", features = ["fs"] }
+url = "2.5.4"
+
+clap = { version = "4.4", features = ["derive"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.2", features = ["client"] }
+wayland-egl = "0.32"
+khronos-egl = { version = "6.0", features = ["static"] }
+gl = "0.14"
+libc = "0.2"
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+ffmpeg-next = "7.1.0"
+
+[build-dependencies]
+gl_generator = "0.14"
+
+[profile.release]
+debug = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "allow"
+
+[[bin]]
+name = "papyrust-daemon"
+path = "src/bin/daemon/main.rs"
+
+[[bin]]
+name = "papyrust-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "papyrust"
+path = "src/main.rs"
+</file>
+
 <file path="src/main.rs">
 use std::collections::HashMap;
 
 use iced::{Element, Font, Settings, Subscription, Task};
 use iced_video_player::Video;
-use library::project::Project;
 use ui::state;
 
-mod library;
 mod ui;
 
-use ui::library::Library;
+use ui::pages::library::Library;
 use ui::{state::Page, view};
+
+use crate::ui::loader::project::Project;
 
 pub struct Papyrust {
     pub current_page: Page,
@@ -2805,6 +2861,7 @@ pub enum Message {
     PreviewError(usize),
     OpenPopup(Project),
     ClosePopup,
+    ApplyProject(Project),
     Tick,
     LoadVideo(String),
     VideoLoaded(String),

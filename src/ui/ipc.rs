@@ -1,6 +1,5 @@
 use anyhow::Result;
 use serde_json::json;
-use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
