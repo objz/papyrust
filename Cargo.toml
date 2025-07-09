@@ -37,6 +37,9 @@ gl_generator = "0.14"
 [profile.release]
 debug = true
 
+[lints.rust]
+unsafe_op_in_unsafe_fn = "allow"
+
 [[bin]]
 name = "papyrust-daemon"
 path = "src/daemon/main.rs"
