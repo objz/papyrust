@@ -274,20 +274,20 @@ impl MediaRenderer {
 
     fn create_pure_shader(shader_path: &str) -> Result<u32> {
         let raw = load_shader(shader_path)?;
-
-        let mut lines = raw.lines();
-        let (version_directive, rest_of_shader) = if let Some(first) = lines.next() {
-            let trimmed = first.trim_start();
-            if trimmed.starts_with("#version") {
-                let body = lines.collect::<Vec<_>>().join("\n");
-                (Some(first), body)
+        let mut version_directive: Option<&str> = None;
+        let mut body_lines = Vec::new();
+        for line in raw.lines() {
+            let trimmed = line.trim_start();
+            if version_directive.is_none() && trimmed.starts_with("#version") {
+                version_directive = Some(line);
             } else {
-                (None, raw.clone())
+                body_lines.push(line);
             }
-        } else {
-            (None, String::new())
-        };
-
+        }
+        body_lines.retain(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("precision ") && t.ends_with("float;"))
+        });
         let mut frag_source = String::new();
         if let Some(v) = version_directive {
             frag_source.push_str(v);
@@ -295,17 +295,16 @@ impl MediaRenderer {
         }
         frag_source.push_str(
             r#"
-                #ifdef GL_ES
-                  #ifdef GL_FRAGMENT_PRECISION_HIGH
-                    precision highp float;
-                  #else
-                    precision mediump float;
-                  #endif
-                #endif
+            #ifdef GL_ES
+              #ifdef GL_FRAGMENT_PRECISION_HIGH
+                precision highp float;
+              #else
+                precision mediump float;
+              #endif
+            #endif
             "#,
         );
-        frag_source.push_str(&rest_of_shader);
-
+        frag_source.push_str(&body_lines.join("\n"));
         let vert_source = r#"
             #version 100
             attribute highp vec2 datIn;
@@ -316,26 +315,25 @@ impl MediaRenderer {
                 gl_Position = vec4(datIn, 0.0, 1.0);
             }
         "#;
-
         Self::compile(vert_source, &frag_source)
     }
 
     fn create_media_shader(shader_path: &str) -> Result<u32> {
         let raw = load_shader(shader_path)?;
-
-        let mut lines = raw.lines();
-        let (version_directive, rest_of_shader) = if let Some(first) = lines.next() {
-            let trimmed = first.trim_start();
-            if trimmed.starts_with("#version") {
-                let body = lines.collect::<Vec<_>>().join("\n");
-                (Some(first), body)
+        let mut version_directive: Option<&str> = None;
+        let mut body_lines = Vec::new();
+        for line in raw.lines() {
+            let trimmed = line.trim_start();
+            if version_directive.is_none() && trimmed.starts_with("#version") {
+                version_directive = Some(line);
             } else {
-                (None, raw.clone())
+                body_lines.push(line);
             }
-        } else {
-            (None, String::new())
-        };
-
+        }
+        body_lines.retain(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("precision ") && t.ends_with("float;"))
+        });
         let mut frag_source = String::new();
         if let Some(v) = version_directive {
             frag_source.push_str(v);
@@ -343,21 +341,19 @@ impl MediaRenderer {
         }
         frag_source.push_str(
             r#"
-                #ifdef GL_ES
-                  #ifdef GL_FRAGMENT_PRECISION_HIGH
-                    precision highp float;
-                  #else
-                    precision mediump float;
-                  #endif
-                #endif
+            #ifdef GL_ES
+              #ifdef GL_FRAGMENT_PRECISION_HIGH
+                precision highp float;
+              #else
+                precision mediump float;
+              #endif
+            #endif
             "#,
         );
-        frag_source.push_str(&rest_of_shader);
-
+        frag_source.push_str(&body_lines.join("\n"));
         let vert_source = vertex_shader();
         Self::compile(vert_source, &frag_source)
     }
-
     fn create_default_shader() -> Result<u32> {
         let vert_source = vertex_shader();
         let frag_source = default_shader();
