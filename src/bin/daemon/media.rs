@@ -73,6 +73,9 @@ pub struct VideoDecoder {
     stream_index: usize,
     video_path: String,
     eof_reached: bool,
+    video_fps: f64,
+    last_frame_time: u64,
+    frame_duration_ms: u64,
 }
 
 impl VideoDecoder {
@@ -102,7 +105,19 @@ impl VideoDecoder {
         let width = decoder.width();
         let height = decoder.height();
 
-        eprintln!("Video info: {}x{}", width, height);
+        // Extract video FPS from the stream
+        let video_fps = {
+            let rate = stream.rate();
+            if rate.1 > 0 {
+                rate.0 as f64 / rate.1 as f64
+            } else {
+                30.0 // fallback to 30 FPS if unable to determine
+            }
+        };
+
+        let frame_duration_ms = (1000.0 / video_fps) as u64;
+
+        eprintln!("Video info: {}x{}, FPS: {:.2}, frame duration: {}ms", width, height, video_fps, frame_duration_ms);
 
         let scaler = if decoder.format() != ffmpeg::format::Pixel::RGB24 {
             Some(
@@ -157,10 +172,20 @@ impl VideoDecoder {
             stream_index,
             video_path: path.to_string(),
             eof_reached: false,
+            video_fps,
+            last_frame_time: crate::utils::get_time_millis(),
+            frame_duration_ms,
         })
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
+        let current_time = crate::utils::get_time_millis();
+        
+        // Check if enough time has passed for the next frame based on video FPS
+        if current_time - self.last_frame_time < self.frame_duration_ms {
+            return Ok(false); // Not time for next frame yet
+        }
+
         let mut frame_updated = false;
 
         // restart the video
@@ -225,6 +250,7 @@ impl VideoDecoder {
                             }
 
                             frame_updated = true;
+                            self.last_frame_time = current_time;
                             return Ok(frame_updated);
                         }
                     }
@@ -247,6 +273,8 @@ impl VideoDecoder {
     }
 
     fn restart_video(&mut self) -> Result<()> {
+        self.last_frame_time = crate::utils::get_time_millis();
+        
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
             eprintln!("Seeking failed, recreating input context");
 
@@ -280,6 +308,10 @@ impl VideoDecoder {
 
     pub fn _dimensions(&self) -> (u32, u32) {
         (self._width, self._height)
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.video_fps
     }
 }
 
