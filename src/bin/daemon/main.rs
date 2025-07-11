@@ -23,7 +23,7 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long, default_value = "30")]
+    #[arg(short, long, default_value = "30", help = "Render loop frame rate (videos play at their original FPS regardless of this setting)")]
     fps: u16,
 
     #[arg(short, long)]
