@@ -76,6 +76,7 @@ pub struct VideoDecoder {
     video_fps: f64,
     last_frame_time: u64,
     frame_duration_ms: u64,
+    accumulated_time: f64, // Track partial frame timing for high FPS videos
 }
 
 impl VideoDecoder {
@@ -108,14 +109,31 @@ impl VideoDecoder {
         // Extract video FPS from the stream
         let video_fps = {
             let rate = stream.rate();
-            if rate.1 > 0 {
+            let fps = if rate.1 > 0 {
                 rate.0 as f64 / rate.1 as f64
             } else {
-                30.0 // fallback to 30 FPS if unable to determine
+                // Try alternative method using time_base
+                let time_base = stream.time_base();
+                if time_base.1 > 0 {
+                    time_base.1 as f64 / time_base.0 as f64
+                } else {
+                    30.0 // final fallback
+                }
+            };
+            
+            // Validate FPS is reasonable (between 1 and 240 FPS)
+            if fps >= 1.0 && fps <= 240.0 {
+                fps
+            } else {
+                eprintln!("Warning: Detected unusual FPS ({:.2}), using default 30 FPS", fps);
+                30.0
             }
         };
 
         let frame_duration_ms = (1000.0 / video_fps) as u64;
+        
+        // Ensure minimum frame duration to prevent excessive CPU usage
+        let frame_duration_ms = frame_duration_ms.max(1);
 
         eprintln!("Video info: {}x{}, FPS: {:.2}, frame duration: {}ms", width, height, video_fps, frame_duration_ms);
 
@@ -175,14 +193,19 @@ impl VideoDecoder {
             video_fps,
             last_frame_time: crate::utils::get_time_millis(),
             frame_duration_ms,
+            accumulated_time: 0.0,
         })
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
         let current_time = crate::utils::get_time_millis();
+        let delta_time = current_time - self.last_frame_time;
+        
+        // Accumulate time since last frame
+        self.accumulated_time += delta_time as f64;
         
         // Check if enough time has passed for the next frame based on video FPS
-        if current_time - self.last_frame_time < self.frame_duration_ms {
+        if self.accumulated_time < self.frame_duration_ms as f64 {
             return Ok(false); // Not time for next frame yet
         }
 
@@ -251,6 +274,8 @@ impl VideoDecoder {
 
                             frame_updated = true;
                             self.last_frame_time = current_time;
+                            // Subtract the frame duration from accumulated time, keeping any excess
+                            self.accumulated_time -= self.frame_duration_ms as f64;
                             return Ok(frame_updated);
                         }
                     }
@@ -274,6 +299,7 @@ impl VideoDecoder {
 
     fn restart_video(&mut self) -> Result<()> {
         self.last_frame_time = crate::utils::get_time_millis();
+        self.accumulated_time = 0.0;
         
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
             eprintln!("Seeking failed, recreating input context");
