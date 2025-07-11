@@ -23,7 +23,7 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long, default_value = "0")]
+    #[arg(short, long, default_value = "30")]
     fps: u16,
 
     #[arg(short, long)]
