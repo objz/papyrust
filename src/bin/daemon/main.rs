@@ -23,7 +23,7 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long, default_value = "30", help = "Render loop frame rate (videos play at their original FPS regardless of this setting)")]
+    #[arg(short, long, default_value = "0")]
     fps: u16,
 
     #[arg(short, long)]
@@ -58,10 +58,11 @@ fn main() -> Result<()> {
         }
     }
 
-    let (_tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
 
+    let ipc_tx = tx.clone();
     thread::spawn(move || {
-        if let Err(e) = ipc::start_server() {
+        if let Err(e) = ipc::start_server(ipc_tx) {
             eprintln!("IPC server error: {}", e);
         }
     });

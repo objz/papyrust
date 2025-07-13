@@ -76,7 +76,7 @@ pub struct VideoDecoder {
     video_fps: f64,
     last_frame_time: u64,
     frame_duration_ms: u64,
-    accumulated_time: f64, // Track partial frame timing for high FPS videos
+    accumulated_time: f64, 
 }
 
 impl VideoDecoder {
@@ -106,22 +106,19 @@ impl VideoDecoder {
         let width = decoder.width();
         let height = decoder.height();
 
-        // Extract video FPS from the stream
         let video_fps = {
             let rate = stream.rate();
             let fps = if rate.1 > 0 {
                 rate.0 as f64 / rate.1 as f64
             } else {
-                // Try alternative method using time_base
                 let time_base = stream.time_base();
                 if time_base.1 > 0 {
                     time_base.1 as f64 / time_base.0 as f64
                 } else {
-                    30.0 // final fallback
+                    30.0 
                 }
             };
             
-            // Validate FPS is reasonable (between 1 and 240 FPS)
             if fps >= 1.0 && fps <= 240.0 {
                 fps
             } else {
@@ -132,7 +129,6 @@ impl VideoDecoder {
 
         let frame_duration_ms = (1000.0 / video_fps) as u64;
         
-        // Ensure minimum frame duration to prevent excessive CPU usage
         let frame_duration_ms = frame_duration_ms.max(1);
 
         eprintln!("Video info: {}x{}, FPS: {:.2}, frame duration: {}ms", width, height, video_fps, frame_duration_ms);
@@ -166,7 +162,6 @@ impl VideoDecoder {
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
 
-            // empty texture
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
@@ -201,12 +196,10 @@ impl VideoDecoder {
         let current_time = crate::utils::get_time_millis();
         let delta_time = current_time - self.last_frame_time;
         
-        // Accumulate time since last frame
         self.accumulated_time += delta_time as f64;
         
-        // Check if enough time has passed for the next frame based on video FPS
         if self.accumulated_time < self.frame_duration_ms as f64 {
-            return Ok(false); // Not time for next frame yet
+            return Ok(false); 
         }
 
         let mut frame_updated = false;
@@ -274,7 +267,6 @@ impl VideoDecoder {
 
                             frame_updated = true;
                             self.last_frame_time = current_time;
-                            // Subtract the frame duration from accumulated time, keeping any excess
                             self.accumulated_time -= self.frame_duration_ms as f64;
                             return Ok(frame_updated);
                         }
