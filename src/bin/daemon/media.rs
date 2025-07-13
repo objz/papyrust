@@ -26,7 +26,6 @@ impl ImageLoader {
         eprintln!("Loading image: {}", path);
 
         let img = image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
-
         let rgba = img.to_rgba8();
         let (width, height) = (img.width(), img.height());
 
@@ -36,14 +35,11 @@ impl ImageLoader {
         unsafe {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
-
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
@@ -55,7 +51,6 @@ impl ImageLoader {
                 gl::UNSIGNED_BYTE,
                 rgba.as_ptr() as *const _,
             );
-
             eprintln!("Texture created successfully: {}", texture);
         }
 
@@ -73,10 +68,9 @@ pub struct VideoDecoder {
     stream_index: usize,
     video_path: String,
     eof_reached: bool,
-    video_fps: f64,
-    last_frame_time: u64,
-    frame_duration_ms: u64,
-    accumulated_time: f64, 
+    last_frame_time: f64,
+    frame_duration_ms: f64,
+    accumulated_time: f64,
 }
 
 impl VideoDecoder {
@@ -94,10 +88,9 @@ impl VideoDecoder {
             .ok_or_else(|| anyhow!("No video stream found in {}", path))?;
 
         let stream_index = stream.index();
-
-        let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-            .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
-
+        let context_decoder =
+            ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+                .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
         let decoder = context_decoder
             .decoder()
             .video()
@@ -111,15 +104,14 @@ impl VideoDecoder {
             let fps = if rate.1 > 0 {
                 rate.0 as f64 / rate.1 as f64
             } else {
-                let time_base = stream.time_base();
-                if time_base.1 > 0 {
-                    time_base.1 as f64 / time_base.0 as f64
+                let tb = stream.time_base();
+                if tb.1 > 0 {
+                    tb.1 as f64 / tb.0 as f64
                 } else {
-                    30.0 
+                    30.0
                 }
             };
-            
-            if fps >= 1.0 && fps <= 240.0 {
+            if (1.0..=240.0).contains(&fps) {
                 fps
             } else {
                 eprintln!("Warning: Detected unusual FPS ({:.2}), using default 30 FPS", fps);
@@ -127,11 +119,12 @@ impl VideoDecoder {
             }
         };
 
-        let frame_duration_ms = (1000.0 / video_fps) as u64;
-        
-        let frame_duration_ms = frame_duration_ms.max(1);
+        let frame_duration_ms = (1000.0 / video_fps).max(1.0);
 
-        eprintln!("Video info: {}x{}, FPS: {:.2}, frame duration: {}ms", width, height, video_fps, frame_duration_ms);
+        eprintln!(
+            "Video info: {}x{}, FPS: {:.2}, frame duration: {}ms",
+            width, height, video_fps, frame_duration_ms
+        );
 
         let scaler = if decoder.format() != ffmpeg::format::Pixel::RGB24 {
             Some(
@@ -154,14 +147,11 @@ impl VideoDecoder {
         unsafe {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
-
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
@@ -185,26 +175,23 @@ impl VideoDecoder {
             stream_index,
             video_path: path.to_string(),
             eof_reached: false,
-            video_fps,
-            last_frame_time: crate::utils::get_time_millis(),
+            last_frame_time: crate::utils::get_time_millis() as f64,
             frame_duration_ms,
             accumulated_time: 0.0,
         })
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
-        let current_time = crate::utils::get_time_millis();
+        let current_time = crate::utils::get_time_millis() as f64;
         let delta_time = current_time - self.last_frame_time;
-        
-        self.accumulated_time += delta_time as f64;
-        
-        if self.accumulated_time < self.frame_duration_ms as f64 {
-            return Ok(false); 
+        self.accumulated_time += delta_time;
+        self.last_frame_time = current_time;
+
+        if self.accumulated_time < self.frame_duration_ms {
+            return Ok(false);
         }
+        self.accumulated_time -= self.frame_duration_ms;
 
-        let mut frame_updated = false;
-
-        // restart the video
         if self.eof_reached {
             self.restart_video()?;
             self.eof_reached = false;
@@ -215,17 +202,16 @@ impl VideoDecoder {
                 match self.decoder.send_packet(&packet) {
                     Ok(_) => {
                         let mut decoded_frame = ffmpeg::frame::Video::empty();
-
                         while self.decoder.receive_frame(&mut decoded_frame).is_ok() {
                             let rgb_frame = if decoded_frame.format()
                                 != ffmpeg::format::Pixel::RGB24
                             {
                                 if let Some(ref mut scaler) = self.scaler {
-                                    let mut rgb_frame = ffmpeg::frame::Video::empty();
+                                    let mut out = ffmpeg::frame::Video::empty();
                                     scaler
-                                        .run(&decoded_frame, &mut rgb_frame)
+                                        .run(&decoded_frame, &mut out)
                                         .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                                    rgb_frame
+                                    out
                                 } else {
                                     let mut new_scaler = ffmpeg::software::scaling::Context::get(
                                         decoded_frame.format(),
@@ -237,16 +223,15 @@ impl VideoDecoder {
                                         ffmpeg::software::scaling::flag::Flags::BILINEAR,
                                     )
                                     .map_err(|e| anyhow!("Failed to create scaler: {}", e))?;
-
-                                    let mut rgb_frame = ffmpeg::frame::Video::empty();
+                                    let mut out = ffmpeg::frame::Video::empty();
                                     new_scaler
-                                        .run(&decoded_frame, &mut rgb_frame)
+                                        .run(&decoded_frame, &mut out)
                                         .map_err(|e| anyhow!("Scaling failed: {}", e))?;
                                     self.scaler = Some(new_scaler);
-                                    rgb_frame
+                                    out
                                 }
                             } else {
-                                decoded_frame
+                                decoded_frame.clone()
                             };
 
                             unsafe {
@@ -265,34 +250,25 @@ impl VideoDecoder {
                                 );
                             }
 
-                            frame_updated = true;
-                            self.last_frame_time = current_time;
-                            self.accumulated_time -= self.frame_duration_ms as f64;
-                            return Ok(frame_updated);
+                            return Ok(true);
                         }
                     }
                     Err(ffmpeg::Error::Eof) => {
                         self.eof_reached = true;
                         break;
                     }
-                    Err(_) => {
-                        continue;
-                    }
+                    Err(_) => continue,
                 }
             }
         }
 
-        if !frame_updated {
-            self.eof_reached = true;
-        }
-
-        Ok(frame_updated)
+        Ok(false)
     }
 
     fn restart_video(&mut self) -> Result<()> {
-        self.last_frame_time = crate::utils::get_time_millis();
+        self.last_frame_time = crate::utils::get_time_millis() as f64;
         self.accumulated_time = 0.0;
-        
+
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
             eprintln!("Seeking failed, recreating input context");
 
@@ -306,11 +282,9 @@ impl VideoDecoder {
                 .ok_or_else(|| anyhow!("No video stream found after restart"))?;
 
             self.stream_index = stream.index();
-
             let context_decoder =
                 ffmpeg::codec::context::Context::from_parameters(stream.parameters())
                     .map_err(|e| anyhow!("Failed to recreate codec context: {}", e))?;
-
             self.decoder = context_decoder
                 .decoder()
                 .video()
@@ -328,9 +302,6 @@ impl VideoDecoder {
         (self._width, self._height)
     }
 
-    pub fn fps(&self) -> f64 {
-        self.video_fps
-    }
 }
 
 pub fn load_shader(path: &str) -> Result<String> {
@@ -355,13 +326,9 @@ uniform float u_time;
 varying vec2 texCoords;
 
 void main() {
-    // Simple passthrough with optional UV animation
     vec2 uv = texCoords;
-    
-    // Subtle breathing effect
     float scale = 1.0 + 0.01 * sin(u_time * 2.0);
     uv = (uv - 0.5) * scale + 0.5;
-    
     vec4 color = texture2D(u_media, uv);
     gl_FragColor = color;
 }
