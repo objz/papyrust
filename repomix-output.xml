@@ -122,6 +122,740 @@ void main() {
 }
 </file>
 
+<file path="src/bin/daemon/utils.rs">
+use std::thread;
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub fn get_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+pub fn sleep_millis(millis: u64) {
+    if millis > 0 {
+        thread::sleep(Duration::from_millis(millis));
+    }
+}
+</file>
+
+<file path="src/ui/components/lib_popup.rs">
+use iced::{
+    alignment::{Horizontal, Vertical},
+    widget::{button, mouse_area, text, Button, Column, Container, Row, Space},
+    Background, Border, Color, Element, Length, Padding, Shadow, Vector,
+};
+use iced_video_player::VideoPlayer;
+
+use crate::{ui::loader::project::Project, Message, Papyrust};
+
+pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
+    let title = project.meta.title.as_deref().unwrap_or("Untitled");
+
+    let video_preview = create_preview(app, project);
+
+    let close_button = Button::new(text("Close").size(16))
+        .on_press(Message::ClosePopup)
+        .padding(Padding::from([8, 12]))
+        .style(|_theme, status| {
+            let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
+            let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
+            let border_color = Color::from_rgba(0.6, 0.6, 0.6, 0.5);
+
+            button::Style {
+                background: Some(Background::Color(
+                    if matches!(status, iced::widget::button::Status::Hovered) {
+                        hover
+                    } else {
+                        base
+                    },
+                )),
+                border: Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: border_color,
+                },
+                text_color: Color::WHITE,
+                ..Default::default()
+            }
+        });
+
+    let apply_button = Button::new(text("Apply").size(16))
+        .padding(Padding::from([8, 12]))
+        .on_press(Message::ApplyProject(project.clone()))
+        .style(|_theme, status| {
+            let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
+            let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
+            let border_color = Color::from_rgba(0.6, 0.6, 0.6, 0.5);
+
+            button::Style {
+                background: Some(Background::Color(
+                    if matches!(status, iced::widget::button::Status::Hovered) {
+                        hover
+                    } else {
+                        base
+                    },
+                )),
+                border: Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: border_color,
+                },
+                text_color: Color::WHITE,
+                ..Default::default()
+            }
+        });
+
+    let header = Row::new()
+        .push(
+            text(title)
+                .size(24)
+                .style(|_theme| iced::widget::text::Style {
+                    color: Some(Color::WHITE),
+                    ..Default::default()
+                }),
+        )
+        .align_y(Vertical::Center);
+
+    let footer_row = Row::new().spacing(10).push(close_button).push(apply_button);
+
+    let footer = Container::new(footer_row)
+        .align_x(Horizontal::Center)
+        .width(Length::Fill);
+
+    let popup_content = Column::new()
+        .push(header)
+        .push(video_preview)
+        .push(Space::new(Length::Fill, Length::Fill))
+        .push(footer)
+        .spacing(20)
+        .padding(20)
+        .width(Length::Fill)
+        .align_x(Horizontal::Center);
+
+    let popup = Container::new(popup_content)
+        .width(Length::Fixed(800.0))
+        .height(Length::Fixed(600.0))
+        .style(|_theme| iced::widget::container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.05, 0.05, 0.05, 0.98))),
+            border: Border {
+                radius: 16.0.into(),
+                width: 2.0,
+                color: Color::from_rgba(0.6, 0.6, 0.6, 0.4),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                offset: Vector::new(0.0, 8.0),
+                blur_radius: 24.0,
+            },
+            ..Default::default()
+        })
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center);
+
+    let protected = mouse_area(popup).on_press(Message::DoNothing);
+
+    mouse_area(
+        Container::new(protected)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
+                ..Default::default()
+            })
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center),
+    )
+    .on_press(Message::ClosePopup)
+    .into()
+}
+
+fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
+    if let Some(file_name) = &project.meta.file {
+        let video_path = format!("{}/{}", project.path, file_name);
+
+        if let Some(video) = app.peek_video(&video_path) {
+            let video_width = 720.0;
+            let video_height = 405.0;
+
+            Container::new(
+                VideoPlayer::new(video)
+                    .width(Length::Fixed(video_width))
+                    .height(Length::Fixed(video_height)),
+            )
+            .width(Length::Fixed(video_width))
+            .height(Length::Fixed(video_height))
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.95))),
+                border: Border {
+                    radius: 12.0.into(),
+                    width: 2.0,
+                    color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 12.0,
+                },
+                ..Default::default()
+            })
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+        } else {
+            let dots = match app.animation_state {
+                0 => "Loading video.  ",
+                1 => "Loading video.. ",
+                2 => "Loading video...",
+                _ => "Loading video   ",
+            };
+
+            let video_width = 720.0;
+            let video_height = 405.0;
+
+            Container::new(
+                text(dots)
+                    .size(18)
+                    .style(|_theme| iced::widget::text::Style {
+                        color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8)),
+                        ..Default::default()
+                    }),
+            )
+            .width(Length::Fixed(video_width))
+            .height(Length::Fixed(video_height))
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.15, 0.15, 0.15, 0.9))),
+                border: Border {
+                    radius: 12.0.into(),
+                    width: 2.0,
+                    color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
+                },
+                ..Default::default()
+            })
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+        }
+    } else {
+        let video_width = 720.0;
+        let video_height = 405.0;
+
+        Container::new(text("No video available").size(18).style(|_theme| {
+            iced::widget::text::Style {
+                color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8)),
+                ..Default::default()
+            }
+        }))
+        .width(Length::Fixed(video_width))
+        .height(Length::Fixed(video_height))
+        .style(|_theme| iced::widget::container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.15, 0.15, 0.15, 0.9))),
+            border: Border {
+                radius: 12.0.into(),
+                width: 2.0,
+                color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
+            },
+            ..Default::default()
+        })
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .into()
+    }
+}
+</file>
+
+<file path="src/ui/components/panel.rs">
+use iced::{
+    widget::{text, Button, Container, Row},
+    Alignment, Element, Padding,
+};
+
+use crate::Message;
+
+use crate::ui::state::Page;
+
+pub fn build(_app: &crate::Papyrust) -> Element<Message> {
+    let library = Button::new(text("Library"))
+        .on_press(Message::SwitchPage(Page::Library))
+        .padding(Padding::from([8, 16]));
+
+    let discover = Button::new(text("Discover"))
+        .on_press(Message::SwitchPage(Page::Discover))
+        .padding(Padding::from([8, 16]));
+
+    let content = Row::new()
+        .push(library)
+        .push(discover)
+        .spacing(15)
+        .align_y(Alignment::Center);
+
+    Container::new(content)
+        .padding(Padding::from([10, 20]))
+        .into()
+}
+</file>
+
+<file path="src/ui/loader/mod.rs">
+use crate::ui::loader::project::{Project, ProjectMeta};
+use std::{fs, path::PathBuf};
+
+pub mod project;
+
+const WALLPAPER_ENGINE_ID: &str = "431960";
+const WORKSHOP_PATHS: [&str; 4] = [
+    "~/.steam/steam/steamapps/workshop",
+    "~/.local/share/Steam/steamapps/workshop",
+    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
+    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
+];
+
+fn resolve_paths() -> Vec<PathBuf> {
+    WORKSHOP_PATHS
+        .iter()
+        .map(|p| shellexpand::tilde(p).to_string())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+pub struct Loader {
+    project_paths: Vec<PathBuf>,
+    current: usize,
+}
+
+impl Loader {
+    pub fn new() -> Self {
+        let mut paths = Vec::new();
+
+        for base in resolve_paths() {
+            if let Ok(entries) = fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    if dir.is_dir() && dir.join("project.json").exists() {
+                        paths.push(dir);
+                    }
+                }
+            }
+        }
+
+        Loader {
+            project_paths: paths,
+            current: 0,
+        }
+    }
+
+    pub fn next(&mut self) -> Option<Result<Project, String>> {
+        if self.current >= self.project_paths.len() {
+            None
+        } else {
+            let dir = self.project_paths[self.current].clone();
+            self.current += 1;
+            let path = dir.join("project.json");
+            Some(parse(&path, &dir))
+        }
+    }
+}
+
+fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+    let meta: ProjectMeta = serde_json::from_str(&content)
+        .map_err(|e| format!("JSON parse error in {}: {}", path.display(), e))?;
+
+    Ok(Project {
+        meta,
+        path: dir.to_string_lossy().to_string(),
+    })
+}
+</file>
+
+<file path="src/ui/loader/project.rs">
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectType {
+    #[serde(alias = "Web")]
+    Web,
+    #[serde(alias = "Video")]
+    Video,
+    #[serde(alias = "Application")]
+    Application,
+    #[serde(alias = "Scene")]
+    Scene,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ProjectMeta {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    #[serde(rename = "type")]
+    pub file_type: Option<ProjectType>,
+    pub preview: Option<String>,
+    pub file: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Project {
+    pub meta: ProjectMeta,
+    pub path: String,
+}
+</file>
+
+<file path="src/ui/pages/discover.rs">
+use iced::Element;
+
+use crate::{Message, Papyrust};
+
+pub fn build(_app: &Papyrust) -> Element<Message> {
+    iced::widget::text("Discover").into()
+}
+</file>
+
+<file path="src/ui/pages/library.rs">
+use iced::alignment::{Horizontal, Vertical};
+use iced::widget::image::Handle;
+use iced::widget::{Button, Column, Container};
+use iced::{
+    widget::{column, container, scrollable, text},
+    Element, Length,
+};
+use iced::{Alignment, Padding, Task};
+use image::{imageops, load_from_memory, RgbaImage};
+use tokio::{fs, task};
+
+use crate::ui::loader::project::{Project, ProjectType};
+use crate::ui::loader::Loader;
+use crate::{Message, Papyrust};
+
+pub struct Library {
+    pub projects: Vec<Project>,
+    pub preview: Vec<Option<Handle>>,
+}
+
+const PREVIEW_WIDTH: f32 = 140.0;
+const PREVIEW_HEIGHT: f32 = 140.0;
+
+const ITEM_WIDTH: f32 = 160.0;
+const ITEM_HEIGHT: f32 = 200.0;
+
+impl Library {
+    pub fn new() -> Self {
+        let mut loader = Loader::new();
+        let mut projects = Vec::new();
+        let mut preview = Vec::new();
+
+        while let Some(result) = loader.next() {
+            match result {
+                Ok(project) => {
+                    // Skip for now all non-video projects
+                    if project.meta.file_type != Some(ProjectType::Video) {
+                        continue;
+                    }
+                    projects.push(project);
+                    preview.push(None);
+                }
+                Err(e) => eprintln!("Project parse error: {}", e),
+            }
+        }
+
+        Self { projects, preview }
+    }
+
+    pub fn next(&mut self) -> Option<Task<Message>> {
+        self.projects
+            .iter()
+            .enumerate()
+            .find(|(idx, proj)| self.preview[*idx].is_none() && proj.meta.preview.is_some())
+            .map(|(idx, proj)| {
+                let name = proj.meta.preview.as_ref().unwrap().clone();
+                let path = format!("{}/{}", proj.path, name);
+                Task::perform(
+                    async move {
+                        let buf = fs::read(&path).await.ok();
+                        if let Some(bytes) = buf {
+                            let decode = task::spawn_blocking(move || {
+                                let img = load_from_memory(&bytes).ok()?;
+                                let mut rgba = img.to_rgba8();
+
+                                // Ik this is not the most efficient way to handle this, but iced forces me to do it this way
+                                rgba = Self::resize_image(rgba, PREVIEW_WIDTH as u32);
+                                rgba = Self::round_image(rgba, 4.0);
+                                let (w, h) = rgba.dimensions();
+                                Some((w, h, rgba.into_raw()))
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+
+                            if let Some((w, h, pixels)) = decode {
+                                return (idx, Ok((w, h, pixels)));
+                            }
+                        }
+                        (idx, Err(()))
+                    },
+                    |(i, result)| match result {
+                        Ok((w, h, pixels)) => Message::PreviewDecoded(i, w, h, pixels),
+                        Err(_) => Message::PreviewError(i),
+                    },
+                )
+            })
+    }
+
+    fn round_image(img: RgbaImage, radius: f32) -> RgbaImage {
+        let (width, height) = img.dimensions();
+        let mut rounded = img.clone();
+
+        let radius_u32 = radius as u32;
+        let right_bound = width.saturating_sub(radius_u32);
+        let bottom_bound = height.saturating_sub(radius_u32);
+        let radius_sq = radius * radius;
+
+        let corners = [
+            (0..radius_u32, 0..radius_u32),
+            (right_bound..width, 0..radius_u32),
+            (0..radius_u32, bottom_bound..height),
+            (right_bound..width, bottom_bound..height),
+        ];
+
+        for (x_range, y_range) in corners {
+            for y in y_range {
+                for x in x_range.clone() {
+                    let (dx, dy) = match (x < radius_u32, y < radius_u32) {
+                        (true, true) => (radius - x as f32, radius - y as f32),
+                        (false, true) => {
+                            (x as f32 - (width as f32 - radius - 1.0), radius - y as f32)
+                        }
+                        (true, false) => {
+                            (radius - x as f32, y as f32 - (height as f32 - radius - 1.0))
+                        }
+                        (false, false) => (
+                            x as f32 - (width as f32 - radius - 1.0),
+                            y as f32 - (height as f32 - radius - 1.0),
+                        ),
+                    };
+
+                    if dx * dx + dy * dy > radius_sq {
+                        rounded.get_pixel_mut(x, y)[3] = 0;
+                    }
+                }
+            }
+        }
+
+        rounded
+    }
+    fn resize_image(img: RgbaImage, target_size: u32) -> RgbaImage {
+        let (width, height) = img.dimensions();
+
+        let scale = target_size as f32 / width.max(height) as f32;
+        let new_width = (width as f32 * scale) as u32;
+        let new_height = (height as f32 * scale) as u32;
+
+        let src_image = fast_image_resize::images::Image::from_vec_u8(
+            width,
+            height,
+            img.into_raw(),
+            fast_image_resize::PixelType::U8x4,
+        )
+        .unwrap();
+
+        let mut dst_image = fast_image_resize::images::Image::new(
+            new_width,
+            new_height,
+            fast_image_resize::PixelType::U8x4,
+        );
+
+        let mut resizer = fast_image_resize::Resizer::new();
+
+        let resize_options = fast_image_resize::ResizeOptions::new().resize_alg(
+            fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Lanczos3),
+        );
+
+        resizer
+            .resize(&src_image, &mut dst_image, Some(&resize_options))
+            .unwrap();
+
+        let resized_rgba =
+            RgbaImage::from_raw(new_width, new_height, dst_image.into_vec()).unwrap();
+
+        let crop_x = (new_width.saturating_sub(target_size)) / 2;
+        let crop_y = (new_height.saturating_sub(target_size)) / 2;
+
+        imageops::crop_imm(&resized_rgba, crop_x, crop_y, target_size, target_size).to_image()
+    }
+}
+
+pub fn build(app: &Papyrust) -> Element<Message> {
+    let lib = &app.library;
+    let grid = crate::ui::view::create_grid(&app, &lib.projects, &lib.preview);
+
+    container(scrollable(column![text("Library").size(30), grid]))
+        .padding(20)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+pub fn render_item<'a>(
+    app: &Papyrust,
+    project: &'a Project,
+    preview: Option<Handle>,
+) -> Element<'a, Message> {
+    let title = project.meta.title.as_deref().unwrap_or("Untitled");
+    let preview = create_preview(app, preview, project);
+
+    Button::new(
+        Container::new(
+            Column::new()
+                .align_x(Alignment::Center)
+                .padding(Padding::new(0.0).top(4.0))
+                .push(preview)
+                .push(
+                    text(title)
+                        .size(14)
+                        .style(|_theme: &_| iced::widget::text::Style {
+                            color: Some(iced::Color::WHITE),
+                            ..Default::default()
+                        })
+                        .width(Length::Fixed(ITEM_WIDTH - 20.0))
+                        .align_x(Alignment::Center),
+                )
+                .spacing(8),
+        )
+        .width(Length::Fixed(ITEM_WIDTH))
+        .height(Length::Fixed(ITEM_HEIGHT)),
+    )
+    .width(Length::Fixed(ITEM_WIDTH))
+    .height(Length::Fixed(ITEM_HEIGHT))
+    .style(|_theme, status| {
+        let base_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.15);
+        let hover_color = iced::Color::from_rgba(0.5, 0.5, 0.5, 0.3);
+        let border_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.2);
+
+        match status {
+            iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                background: Some(iced::Background::Color(hover_color)),
+                border: iced::Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: border_color,
+                },
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+                    offset: iced::Vector::new(0.0, 2.0),
+                    blur_radius: 4.0,
+                },
+                ..Default::default()
+            },
+            _ => iced::widget::button::Style {
+                background: Some(iced::Background::Color(base_color)),
+                border: iced::Border {
+                    radius: 8.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        }
+    })
+    .on_press(Message::OpenPopup(project.clone()))
+    .into()
+}
+
+fn create_preview<'a>(
+    app: &Papyrust,
+    preview: Option<Handle>,
+    project: &'a Project,
+) -> Element<'a, Message> {
+    if let Some(handle) = preview {
+        Container::new(
+            iced::widget::image(handle)
+                .width(Length::Fixed(PREVIEW_WIDTH))
+                .height(Length::Fixed(PREVIEW_HEIGHT)),
+        )
+        .width(Length::Fixed(PREVIEW_WIDTH))
+        .height(Length::Fixed(PREVIEW_HEIGHT))
+        .clip(true)
+        .into()
+    } else if project.meta.preview.is_some() {
+        let dots = match app.animation_state {
+            0 => "Loading.  ",
+            1 => "Loading.. ",
+            2 => "Loading...",
+            _ => "Loading   ",
+        };
+
+        Container::new(text(dots).style(|_theme: &_| iced::widget::text::Style {
+            color: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+            ..Default::default()
+        }))
+        .width(Length::Fixed(PREVIEW_WIDTH))
+        .height(Length::Fixed(PREVIEW_HEIGHT))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(|_theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(iced::Color::from_rgba(
+                0.5, 0.5, 0.5, 0.1,
+            ))),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+    } else {
+        Container::new(
+            text("No preview").style(|_theme: &_| iced::widget::text::Style {
+                color: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+                ..Default::default()
+            }),
+        )
+        .width(Length::Fixed(PREVIEW_WIDTH))
+        .height(Length::Fixed(PREVIEW_HEIGHT))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(|_theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(iced::Color::from_rgba(
+                0.5, 0.5, 0.5, 0.1,
+            ))),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+    }
+}
+</file>
+
+<file path="src/ui/pages/mod.rs">
+pub mod discover;
+pub mod library;
+</file>
+
+<file path="build.rs">
+use gl_generator::{Api, Fallbacks, Profile, Registry};
+use std::env;
+use std::fs::File;
+use std::path::Path;
+
+fn main() {
+    let dest = env::var("OUT_DIR").unwrap();
+    let mut file = File::create(&Path::new(&dest).join("gl_bindings.rs")).unwrap();
+
+    Registry::new(Api::Gles2, (3, 0), Profile::Core, Fallbacks::All, [])
+        .write_bindings(gl_generator::GlobalGenerator, &mut file)
+        .unwrap();
+}
+</file>
+
 <file path="src/bin/daemon/paper.rs">
 use anyhow::{anyhow, Result};
 use khronos_egl as egl;
@@ -1007,6 +1741,7 @@ pub fn init(
     _height: u16,
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
+    mute: bool,
 ) -> Result<()> {
     let conn = Connection::connect_to_env()?;
     let mut event_queue = conn.new_event_queue();
@@ -1039,7 +1774,7 @@ pub fn init(
     let mut monitor_states = HashMap::new();
 
     for output_info in app_state.outputs.values() {
-        if output_info.name.is_some() {
+        if let Some(name) = &output_info.name {
             match create_monitor_state(
                 output_info,
                 compositor,
@@ -1051,17 +1786,10 @@ pub fn init(
                 &qh,
             ) {
                 Ok(monitor_state) => {
-                    monitor_states
-                        .insert(output_info.name.as_ref().unwrap().clone(), monitor_state);
+                    monitor_states.insert(name.clone(), monitor_state);
                     app_state.total_surfaces += 1;
                 }
-                Err(e) => {
-                    eprintln!(
-                        "Failed to create monitor state for {}: {}",
-                        output_info.name.as_ref().unwrap(),
-                        e
-                    );
-                }
+                Err(e) => eprintln!("Failed to create monitor state for {}: {}", name, e),
             }
         }
     }
@@ -1095,48 +1823,53 @@ pub fn init(
         monitor_states.len()
     );
 
+    let mut last_audio_path: Option<String> = None;
+
     loop {
         let frame_start = utils::get_time_millis();
 
         if let Ok(media_change) = ipc_receiver.try_recv() {
-            if let Some(target_monitor) = &media_change.monitor {
-                if let Some(monitor_state) = monitor_states.get_mut(target_monitor) {
-                    egl_instance.make_current(
-                        monitor_state.egl_display,
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_context),
-                    )?;
-                    if let Err(e) = monitor_state.renderer.update_media(media_change.media_type) {
-                        eprintln!(
-                            "Failed to update media for monitor {}: {}",
-                            target_monitor, e
-                        );
-                    }
-                } else {
-                    eprintln!("Monitor {} not found", target_monitor);
+            // play audio 
+            if let MediaType::Video { path, .. } = &media_change.media_type {
+                let effective_mute = mute || media_change.mute;
+                if !effective_mute && last_audio_path.as_deref() != Some(path.as_str()) {
+                    let audio_path = path.clone();
+                    std::thread::spawn(move || {
+                        let _ = std::process::Command::new("ffplay")
+                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", "-stream_loop", "-1", &audio_path])
+                            .spawn();
+                    });
+                    last_audio_path = Some(path.clone());
                 }
             } else {
-                for monitor_state in monitor_states.values_mut() {
+                last_audio_path = None;
+            }
+
+            if let Some(target) = &media_change.monitor {
+                if let Some(ms) = monitor_states.get_mut(target) {
                     egl_instance.make_current(
-                        monitor_state.egl_display,
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_context),
+                        ms.egl_display,
+                        Some(ms.egl_surface),
+                        Some(ms.egl_surface),
+                        Some(ms.egl_context),
                     )?;
-                    if let Err(e) = monitor_state
-                        .renderer
-                        .update_media(media_change.media_type.clone())
-                    {
-                        eprintln!(
-                            "Failed to update media for monitor {}: {}",
-                            monitor_state
-                                .output_info
-                                .name
-                                .as_deref()
-                                .unwrap_or("unknown"),
-                            e
-                        );
+                    if let Err(e) = ms.renderer.update_media(media_change.media_type) {
+                        eprintln!("Failed to update media for {}: {}", target, e);
+                    }
+                } else {
+                    eprintln!("Monitor {} not found", target);
+                }
+            } else {
+                for ms in monitor_states.values_mut() {
+                    egl_instance.make_current(
+                        ms.egl_display,
+                        Some(ms.egl_surface),
+                        Some(ms.egl_surface),
+                        Some(ms.egl_context),
+                    )?;
+                    if let Err(e) = ms.renderer.update_media(media_change.media_type.clone()) {
+                        let name = ms.output_info.name.as_deref().unwrap_or("unknown");
+                        eprintln!("Failed to update media for {}: {}", name, e);
                     }
                 }
             }
@@ -1144,765 +1877,31 @@ pub fn init(
 
         event_queue.dispatch_pending(&mut app_state)?;
 
-        for monitor_state in monitor_states.values_mut() {
+        for ms in monitor_states.values_mut() {
             egl_instance.make_current(
-                monitor_state.egl_display,
-                Some(monitor_state.egl_surface),
-                Some(monitor_state.egl_surface),
-                Some(monitor_state.egl_context),
+                ms.egl_display,
+                Some(ms.egl_surface),
+                Some(ms.egl_surface),
+                Some(ms.egl_context),
             )?;
 
-            monitor_state.renderer.draw(
+            ms.renderer.draw(
                 &mut fifo_reader,
-                monitor_state.output_info.width,
-                monitor_state.output_info.height,
+                ms.output_info.width,
+                ms.output_info.height,
             )?;
 
-            egl_instance.swap_buffers(monitor_state.egl_display, monitor_state.egl_surface)?;
+            egl_instance.swap_buffers(ms.egl_display, ms.egl_surface)?;
         }
 
         if fps > 0 {
             let frame_time = utils::get_time_millis() - frame_start;
-            let target_frame_time = 1000 / fps as u64;
-            if frame_time < target_frame_time {
-                utils::sleep_millis(target_frame_time - frame_time);
+            let target = 1000 / fps as u64;
+            if frame_time < target {
+                utils::sleep_millis(target - frame_time);
             }
         }
     }
-}
-</file>
-
-<file path="src/bin/daemon/utils.rs">
-use std::thread;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-pub fn get_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
-pub fn sleep_millis(millis: u64) {
-    if millis > 0 {
-        thread::sleep(Duration::from_millis(millis));
-    }
-}
-</file>
-
-<file path="src/ui/components/lib_popup.rs">
-use iced::{
-    alignment::{Horizontal, Vertical},
-    widget::{button, mouse_area, text, Button, Column, Container, Row, Space},
-    Background, Border, Color, Element, Length, Padding, Shadow, Vector,
-};
-use iced_video_player::VideoPlayer;
-
-use crate::{ui::loader::project::Project, Message, Papyrust};
-
-pub fn build<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
-    let title = project.meta.title.as_deref().unwrap_or("Untitled");
-
-    let video_preview = create_preview(app, project);
-
-    let close_button = Button::new(text("Close").size(16))
-        .on_press(Message::ClosePopup)
-        .padding(Padding::from([8, 12]))
-        .style(|_theme, status| {
-            let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
-            let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
-            let border_color = Color::from_rgba(0.6, 0.6, 0.6, 0.5);
-
-            button::Style {
-                background: Some(Background::Color(
-                    if matches!(status, iced::widget::button::Status::Hovered) {
-                        hover
-                    } else {
-                        base
-                    },
-                )),
-                border: Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
-                    color: border_color,
-                },
-                text_color: Color::WHITE,
-                ..Default::default()
-            }
-        });
-
-    let apply_button = Button::new(text("Apply").size(16))
-        .padding(Padding::from([8, 12]))
-        .on_press(Message::ApplyProject(project.clone()))
-        .style(|_theme, status| {
-            let base = Color::from_rgba(0.2, 0.2, 0.2, 0.8);
-            let hover = Color::from_rgba(0.3, 0.3, 0.3, 0.9);
-            let border_color = Color::from_rgba(0.6, 0.6, 0.6, 0.5);
-
-            button::Style {
-                background: Some(Background::Color(
-                    if matches!(status, iced::widget::button::Status::Hovered) {
-                        hover
-                    } else {
-                        base
-                    },
-                )),
-                border: Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
-                    color: border_color,
-                },
-                text_color: Color::WHITE,
-                ..Default::default()
-            }
-        });
-
-    let header = Row::new()
-        .push(
-            text(title)
-                .size(24)
-                .style(|_theme| iced::widget::text::Style {
-                    color: Some(Color::WHITE),
-                    ..Default::default()
-                }),
-        )
-        .align_y(Vertical::Center);
-
-    let footer_row = Row::new().spacing(10).push(close_button).push(apply_button);
-
-    let footer = Container::new(footer_row)
-        .align_x(Horizontal::Center)
-        .width(Length::Fill);
-
-    let popup_content = Column::new()
-        .push(header)
-        .push(video_preview)
-        .push(Space::new(Length::Fill, Length::Fill))
-        .push(footer)
-        .spacing(20)
-        .padding(20)
-        .width(Length::Fill)
-        .align_x(Horizontal::Center);
-
-    let popup = Container::new(popup_content)
-        .width(Length::Fixed(800.0))
-        .height(Length::Fixed(600.0))
-        .style(|_theme| iced::widget::container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.05, 0.05, 0.05, 0.98))),
-            border: Border {
-                radius: 16.0.into(),
-                width: 2.0,
-                color: Color::from_rgba(0.6, 0.6, 0.6, 0.4),
-            },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                offset: Vector::new(0.0, 8.0),
-                blur_radius: 24.0,
-            },
-            ..Default::default()
-        })
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center);
-
-    let protected = mouse_area(popup).on_press(Message::DoNothing);
-
-    mouse_area(
-        Container::new(protected)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_theme| iced::widget::container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
-                ..Default::default()
-            })
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center),
-    )
-    .on_press(Message::ClosePopup)
-    .into()
-}
-
-fn create_preview<'a>(app: &'a Papyrust, project: &'a Project) -> Element<'a, Message> {
-    if let Some(file_name) = &project.meta.file {
-        let video_path = format!("{}/{}", project.path, file_name);
-
-        if let Some(video) = app.peek_video(&video_path) {
-            let video_width = 720.0;
-            let video_height = 405.0;
-
-            Container::new(
-                VideoPlayer::new(video)
-                    .width(Length::Fixed(video_width))
-                    .height(Length::Fixed(video_height)),
-            )
-            .width(Length::Fixed(video_width))
-            .height(Length::Fixed(video_height))
-            .style(|_theme| iced::widget::container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.95))),
-                border: Border {
-                    radius: 12.0.into(),
-                    width: 2.0,
-                    color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
-                },
-                shadow: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-                    offset: Vector::new(0.0, 4.0),
-                    blur_radius: 12.0,
-                },
-                ..Default::default()
-            })
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
-        } else {
-            let dots = match app.animation_state {
-                0 => "Loading video.  ",
-                1 => "Loading video.. ",
-                2 => "Loading video...",
-                _ => "Loading video   ",
-            };
-
-            let video_width = 720.0;
-            let video_height = 405.0;
-
-            Container::new(
-                text(dots)
-                    .size(18)
-                    .style(|_theme| iced::widget::text::Style {
-                        color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8)),
-                        ..Default::default()
-                    }),
-            )
-            .width(Length::Fixed(video_width))
-            .height(Length::Fixed(video_height))
-            .style(|_theme| iced::widget::container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.15, 0.15, 0.15, 0.9))),
-                border: Border {
-                    radius: 12.0.into(),
-                    width: 2.0,
-                    color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
-                },
-                ..Default::default()
-            })
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
-        }
-    } else {
-        let video_width = 720.0;
-        let video_height = 405.0;
-
-        Container::new(text("No video available").size(18).style(|_theme| {
-            iced::widget::text::Style {
-                color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8)),
-                ..Default::default()
-            }
-        }))
-        .width(Length::Fixed(video_width))
-        .height(Length::Fixed(video_height))
-        .style(|_theme| iced::widget::container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.15, 0.15, 0.15, 0.9))),
-            border: Border {
-                radius: 12.0.into(),
-                width: 2.0,
-                color: Color::from_rgba(0.4, 0.4, 0.4, 0.5),
-            },
-            ..Default::default()
-        })
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .into()
-    }
-}
-</file>
-
-<file path="src/ui/components/panel.rs">
-use iced::{
-    widget::{text, Button, Container, Row},
-    Alignment, Element, Padding,
-};
-
-use crate::Message;
-
-use crate::ui::state::Page;
-
-pub fn build(_app: &crate::Papyrust) -> Element<Message> {
-    let library = Button::new(text("Library"))
-        .on_press(Message::SwitchPage(Page::Library))
-        .padding(Padding::from([8, 16]));
-
-    let discover = Button::new(text("Discover"))
-        .on_press(Message::SwitchPage(Page::Discover))
-        .padding(Padding::from([8, 16]));
-
-    let content = Row::new()
-        .push(library)
-        .push(discover)
-        .spacing(15)
-        .align_y(Alignment::Center);
-
-    Container::new(content)
-        .padding(Padding::from([10, 20]))
-        .into()
-}
-</file>
-
-<file path="src/ui/loader/mod.rs">
-use crate::ui::loader::project::{Project, ProjectMeta};
-use std::{fs, path::PathBuf};
-
-pub mod project;
-
-const WALLPAPER_ENGINE_ID: &str = "431960";
-const WORKSHOP_PATHS: [&str; 4] = [
-    "~/.steam/steam/steamapps/workshop",
-    "~/.local/share/Steam/steamapps/workshop",
-    "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop",
-    "~/snap/steam/common/.local/share/Steam/steamapps/workshop",
-];
-
-fn resolve_paths() -> Vec<PathBuf> {
-    WORKSHOP_PATHS
-        .iter()
-        .map(|p| shellexpand::tilde(p).to_string())
-        .map(PathBuf::from)
-        .filter(|p| p.exists())
-        .map(|p| p.join("content").join(WALLPAPER_ENGINE_ID))
-        .filter(|p| p.exists())
-        .collect()
-}
-
-pub struct Loader {
-    project_paths: Vec<PathBuf>,
-    current: usize,
-}
-
-impl Loader {
-    pub fn new() -> Self {
-        let mut paths = Vec::new();
-
-        for base in resolve_paths() {
-            if let Ok(entries) = fs::read_dir(base) {
-                for entry in entries.flatten() {
-                    let dir = entry.path();
-                    if dir.is_dir() && dir.join("project.json").exists() {
-                        paths.push(dir);
-                    }
-                }
-            }
-        }
-
-        Loader {
-            project_paths: paths,
-            current: 0,
-        }
-    }
-
-    pub fn next(&mut self) -> Option<Result<Project, String>> {
-        if self.current >= self.project_paths.len() {
-            None
-        } else {
-            let dir = self.project_paths[self.current].clone();
-            self.current += 1;
-            let path = dir.join("project.json");
-            Some(parse(&path, &dir))
-        }
-    }
-}
-
-fn parse(path: &PathBuf, dir: &PathBuf) -> Result<Project, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-
-    let meta: ProjectMeta = serde_json::from_str(&content)
-        .map_err(|e| format!("JSON parse error in {}: {}", path.display(), e))?;
-
-    Ok(Project {
-        meta,
-        path: dir.to_string_lossy().to_string(),
-    })
-}
-</file>
-
-<file path="src/ui/loader/project.rs">
-use serde::Deserialize;
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ProjectType {
-    #[serde(alias = "Web")]
-    Web,
-    #[serde(alias = "Video")]
-    Video,
-    #[serde(alias = "Application")]
-    Application,
-    #[serde(alias = "Scene")]
-    Scene,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct ProjectMeta {
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub tags: Option<Vec<String>>,
-    #[serde(rename = "type")]
-    pub file_type: Option<ProjectType>,
-    pub preview: Option<String>,
-    pub file: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Project {
-    pub meta: ProjectMeta,
-    pub path: String,
-}
-</file>
-
-<file path="src/ui/pages/discover.rs">
-use iced::Element;
-
-use crate::{Message, Papyrust};
-
-pub fn build(_app: &Papyrust) -> Element<Message> {
-    iced::widget::text("Discover").into()
-}
-</file>
-
-<file path="src/ui/pages/library.rs">
-use iced::alignment::{Horizontal, Vertical};
-use iced::widget::image::Handle;
-use iced::widget::{Button, Column, Container};
-use iced::{
-    widget::{column, container, scrollable, text},
-    Element, Length,
-};
-use iced::{Alignment, Padding, Task};
-use image::{imageops, load_from_memory, RgbaImage};
-use tokio::{fs, task};
-
-use crate::ui::loader::project::{Project, ProjectType};
-use crate::ui::loader::Loader;
-use crate::{Message, Papyrust};
-
-pub struct Library {
-    pub projects: Vec<Project>,
-    pub preview: Vec<Option<Handle>>,
-}
-
-const PREVIEW_WIDTH: f32 = 140.0;
-const PREVIEW_HEIGHT: f32 = 140.0;
-
-const ITEM_WIDTH: f32 = 160.0;
-const ITEM_HEIGHT: f32 = 200.0;
-
-impl Library {
-    pub fn new() -> Self {
-        let mut loader = Loader::new();
-        let mut projects = Vec::new();
-        let mut preview = Vec::new();
-
-        while let Some(result) = loader.next() {
-            match result {
-                Ok(project) => {
-                    // Skip for now all non-video projects
-                    if project.meta.file_type != Some(ProjectType::Video) {
-                        continue;
-                    }
-                    projects.push(project);
-                    preview.push(None);
-                }
-                Err(e) => eprintln!("Project parse error: {}", e),
-            }
-        }
-
-        Self { projects, preview }
-    }
-
-    pub fn next(&mut self) -> Option<Task<Message>> {
-        self.projects
-            .iter()
-            .enumerate()
-            .find(|(idx, proj)| self.preview[*idx].is_none() && proj.meta.preview.is_some())
-            .map(|(idx, proj)| {
-                let name = proj.meta.preview.as_ref().unwrap().clone();
-                let path = format!("{}/{}", proj.path, name);
-                Task::perform(
-                    async move {
-                        let buf = fs::read(&path).await.ok();
-                        if let Some(bytes) = buf {
-                            let decode = task::spawn_blocking(move || {
-                                let img = load_from_memory(&bytes).ok()?;
-                                let mut rgba = img.to_rgba8();
-
-                                // Ik this is not the most efficient way to handle this, but iced forces me to do it this way
-                                rgba = Self::resize_image(rgba, PREVIEW_WIDTH as u32);
-                                rgba = Self::round_image(rgba, 4.0);
-                                let (w, h) = rgba.dimensions();
-                                Some((w, h, rgba.into_raw()))
-                            })
-                            .await
-                            .ok()
-                            .flatten();
-
-                            if let Some((w, h, pixels)) = decode {
-                                return (idx, Ok((w, h, pixels)));
-                            }
-                        }
-                        (idx, Err(()))
-                    },
-                    |(i, result)| match result {
-                        Ok((w, h, pixels)) => Message::PreviewDecoded(i, w, h, pixels),
-                        Err(_) => Message::PreviewError(i),
-                    },
-                )
-            })
-    }
-
-    fn round_image(img: RgbaImage, radius: f32) -> RgbaImage {
-        let (width, height) = img.dimensions();
-        let mut rounded = img.clone();
-
-        let radius_u32 = radius as u32;
-        let right_bound = width.saturating_sub(radius_u32);
-        let bottom_bound = height.saturating_sub(radius_u32);
-        let radius_sq = radius * radius;
-
-        let corners = [
-            (0..radius_u32, 0..radius_u32),
-            (right_bound..width, 0..radius_u32),
-            (0..radius_u32, bottom_bound..height),
-            (right_bound..width, bottom_bound..height),
-        ];
-
-        for (x_range, y_range) in corners {
-            for y in y_range {
-                for x in x_range.clone() {
-                    let (dx, dy) = match (x < radius_u32, y < radius_u32) {
-                        (true, true) => (radius - x as f32, radius - y as f32),
-                        (false, true) => {
-                            (x as f32 - (width as f32 - radius - 1.0), radius - y as f32)
-                        }
-                        (true, false) => {
-                            (radius - x as f32, y as f32 - (height as f32 - radius - 1.0))
-                        }
-                        (false, false) => (
-                            x as f32 - (width as f32 - radius - 1.0),
-                            y as f32 - (height as f32 - radius - 1.0),
-                        ),
-                    };
-
-                    if dx * dx + dy * dy > radius_sq {
-                        rounded.get_pixel_mut(x, y)[3] = 0;
-                    }
-                }
-            }
-        }
-
-        rounded
-    }
-    fn resize_image(img: RgbaImage, target_size: u32) -> RgbaImage {
-        let (width, height) = img.dimensions();
-
-        let scale = target_size as f32 / width.max(height) as f32;
-        let new_width = (width as f32 * scale) as u32;
-        let new_height = (height as f32 * scale) as u32;
-
-        let src_image = fast_image_resize::images::Image::from_vec_u8(
-            width,
-            height,
-            img.into_raw(),
-            fast_image_resize::PixelType::U8x4,
-        )
-        .unwrap();
-
-        let mut dst_image = fast_image_resize::images::Image::new(
-            new_width,
-            new_height,
-            fast_image_resize::PixelType::U8x4,
-        );
-
-        let mut resizer = fast_image_resize::Resizer::new();
-
-        let resize_options = fast_image_resize::ResizeOptions::new().resize_alg(
-            fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Lanczos3),
-        );
-
-        resizer
-            .resize(&src_image, &mut dst_image, Some(&resize_options))
-            .unwrap();
-
-        let resized_rgba =
-            RgbaImage::from_raw(new_width, new_height, dst_image.into_vec()).unwrap();
-
-        let crop_x = (new_width.saturating_sub(target_size)) / 2;
-        let crop_y = (new_height.saturating_sub(target_size)) / 2;
-
-        imageops::crop_imm(&resized_rgba, crop_x, crop_y, target_size, target_size).to_image()
-    }
-}
-
-pub fn build(app: &Papyrust) -> Element<Message> {
-    let lib = &app.library;
-    let grid = crate::ui::view::create_grid(&app, &lib.projects, &lib.preview);
-
-    container(scrollable(column![text("Library").size(30), grid]))
-        .padding(20)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
-pub fn render_item<'a>(
-    app: &Papyrust,
-    project: &'a Project,
-    preview: Option<Handle>,
-) -> Element<'a, Message> {
-    let title = project.meta.title.as_deref().unwrap_or("Untitled");
-    let preview = create_preview(app, preview, project);
-
-    Button::new(
-        Container::new(
-            Column::new()
-                .align_x(Alignment::Center)
-                .padding(Padding::new(0.0).top(4.0))
-                .push(preview)
-                .push(
-                    text(title)
-                        .size(14)
-                        .style(|_theme: &_| iced::widget::text::Style {
-                            color: Some(iced::Color::WHITE),
-                            ..Default::default()
-                        })
-                        .width(Length::Fixed(ITEM_WIDTH - 20.0))
-                        .align_x(Alignment::Center),
-                )
-                .spacing(8),
-        )
-        .width(Length::Fixed(ITEM_WIDTH))
-        .height(Length::Fixed(ITEM_HEIGHT)),
-    )
-    .width(Length::Fixed(ITEM_WIDTH))
-    .height(Length::Fixed(ITEM_HEIGHT))
-    .style(|_theme, status| {
-        let base_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.15);
-        let hover_color = iced::Color::from_rgba(0.5, 0.5, 0.5, 0.3);
-        let border_color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.2);
-
-        match status {
-            iced::widget::button::Status::Hovered => iced::widget::button::Style {
-                background: Some(iced::Background::Color(hover_color)),
-                border: iced::Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
-                    color: border_color,
-                },
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.1),
-                    offset: iced::Vector::new(0.0, 2.0),
-                    blur_radius: 4.0,
-                },
-                ..Default::default()
-            },
-            _ => iced::widget::button::Style {
-                background: Some(iced::Background::Color(base_color)),
-                border: iced::Border {
-                    radius: 8.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        }
-    })
-    .on_press(Message::OpenPopup(project.clone()))
-    .into()
-}
-
-fn create_preview<'a>(
-    app: &Papyrust,
-    preview: Option<Handle>,
-    project: &'a Project,
-) -> Element<'a, Message> {
-    if let Some(handle) = preview {
-        Container::new(
-            iced::widget::image(handle)
-                .width(Length::Fixed(PREVIEW_WIDTH))
-                .height(Length::Fixed(PREVIEW_HEIGHT)),
-        )
-        .width(Length::Fixed(PREVIEW_WIDTH))
-        .height(Length::Fixed(PREVIEW_HEIGHT))
-        .clip(true)
-        .into()
-    } else if project.meta.preview.is_some() {
-        let dots = match app.animation_state {
-            0 => "Loading.  ",
-            1 => "Loading.. ",
-            2 => "Loading...",
-            _ => "Loading   ",
-        };
-
-        Container::new(text(dots).style(|_theme: &_| iced::widget::text::Style {
-            color: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
-            ..Default::default()
-        }))
-        .width(Length::Fixed(PREVIEW_WIDTH))
-        .height(Length::Fixed(PREVIEW_HEIGHT))
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .style(|_theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(iced::Color::from_rgba(
-                0.5, 0.5, 0.5, 0.1,
-            ))),
-            border: iced::Border {
-                radius: 4.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-    } else {
-        Container::new(
-            text("No preview").style(|_theme: &_| iced::widget::text::Style {
-                color: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
-                ..Default::default()
-            }),
-        )
-        .width(Length::Fixed(PREVIEW_WIDTH))
-        .height(Length::Fixed(PREVIEW_HEIGHT))
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .style(|_theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(iced::Color::from_rgba(
-                0.5, 0.5, 0.5, 0.1,
-            ))),
-            border: iced::Border {
-                radius: 4.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-    }
-}
-</file>
-
-<file path="src/ui/pages/mod.rs">
-pub mod discover;
-pub mod library;
-</file>
-
-<file path="build.rs">
-use gl_generator::{Api, Fallbacks, Profile, Registry};
-use std::env;
-use std::fs::File;
-use std::path::Path;
-
-fn main() {
-    let dest = env::var("OUT_DIR").unwrap();
-    let mut file = File::create(&Path::new(&dest).join("gl_bindings.rs")).unwrap();
-
-    Registry::new(Api::Gles2, (3, 0), Profile::Core, Fallbacks::All, [])
-        .write_bindings(gl_generator::GlobalGenerator, &mut file)
-        .unwrap();
 }
 </file>
 
@@ -1986,6 +1985,8 @@ pub enum IpcCommand {
         path: String,
         shader: Option<String>,
         monitor: Option<String>,
+        #[serde(default)]
+        mute: bool,
     },
     SetShader {
         path: String,
@@ -2004,11 +2005,11 @@ pub enum IpcResponse {
 pub struct MediaChange {
     pub media_type: MediaType,
     pub monitor: Option<String>,
+    pub mute: bool,
 }
 
 pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     let socket_path = "/tmp/papyrust-daemon.sock";
-
     let _ = std::fs::remove_file(socket_path);
 
     let listener =
@@ -2053,6 +2054,7 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 let media_change = MediaChange {
                     media_type: MediaType::Image { path, shader },
                     monitor,
+                    mute: false,
                 };
                 match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
@@ -2065,10 +2067,12 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 path,
                 shader,
                 monitor,
+                mute,
             } => {
                 let media_change = MediaChange {
                     media_type: MediaType::Video { path, shader },
                     monitor,
+                    mute,
                 };
                 match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
@@ -2081,6 +2085,7 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 let media_change = MediaChange {
                     media_type: MediaType::Shader(path),
                     monitor,
+                    mute: false,
                 };
                 match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
@@ -2089,7 +2094,6 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                     },
                 }
             }
-
         };
 
         let response_json = serde_json::to_string(&response)?;
@@ -2098,99 +2102,6 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
 
         line.clear();
     }
-
-    Ok(())
-}
-</file>
-
-<file path="src/bin/cli.rs">
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use serde_json;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-
-#[derive(Parser)]
-#[command(name = "papyrust")]
-#[command(about = "A small cli for papyrust-daemon")]
-struct Args {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    Image {
-        path: String,
-        #[arg(long)]
-        shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-    Video {
-        path: String,
-        #[arg(long)]
-        shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-    Shader {
-        path: String,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
-
-    let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
-
-    let command = match args.command {
-        Commands::Image {
-            path,
-            shader,
-            monitor,
-        } => {
-            serde_json::json!({
-                "SetImage": {
-                    "path": path,
-                    "shader": shader,
-                    "monitor": monitor
-                }
-            })
-        }
-        Commands::Video {
-            path,
-            shader,
-            monitor,
-        } => {
-            serde_json::json!({
-                "SetVideo": {
-                    "path": path,
-                    "shader": shader,
-                    "monitor": monitor
-                }
-            })
-        }
-        Commands::Shader { path, monitor } => {
-            serde_json::json!({
-                "SetShader": {
-                    "path": path,
-                    "monitor": monitor
-                }
-            })
-        }
-    };
-
-    writeln!(stream, "{}", command)?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-
-    println!("{}", response.trim());
 
     Ok(())
 }
@@ -2250,7 +2161,6 @@ impl ImageLoader {
                 gl::UNSIGNED_BYTE,
                 rgba.as_ptr() as *const _,
             );
-            eprintln!("Texture created successfully: {}", texture);
         }
 
         Ok(texture)
@@ -2266,7 +2176,6 @@ pub struct VideoDecoder {
     input_ctx: ffmpeg::format::context::Input,
     stream_index: usize,
     video_path: String,
-    eof_reached: bool,
     last_frame_time: f64,
     frame_duration_ms: f64,
     accumulated_time: f64,
@@ -2277,7 +2186,6 @@ impl VideoDecoder {
         eprintln!("Initializing video decoder for: {}", path);
 
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
-
         let input_ctx = ffmpeg::format::input(&Path::new(path))
             .map_err(|e| anyhow!("Failed to open video file {}: {}", path, e))?;
 
@@ -2285,11 +2193,10 @@ impl VideoDecoder {
             .streams()
             .best(ffmpeg::media::Type::Video)
             .ok_or_else(|| anyhow!("No video stream found in {}", path))?;
-
         let stream_index = stream.index();
-        let context_decoder =
-            ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-                .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
+
+        let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+            .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
         let decoder = context_decoder
             .decoder()
             .video()
@@ -2313,17 +2220,11 @@ impl VideoDecoder {
             if (1.0..=240.0).contains(&fps) {
                 fps
             } else {
-                eprintln!("Warning: Detected unusual FPS ({:.2}), using default 30 FPS", fps);
+                eprintln!("Warning: Unusual FPS ({:.2}), defaulting to 30", fps);
                 30.0
             }
         };
-
         let frame_duration_ms = (1000.0 / video_fps).max(1.0);
-
-        eprintln!(
-            "Video info: {}x{}, FPS: {:.2}, frame duration: {}ms",
-            width, height, video_fps, frame_duration_ms
-        );
 
         let scaler = if decoder.format() != ffmpeg::format::Pixel::RGB24 {
             Some(
@@ -2373,7 +2274,6 @@ impl VideoDecoder {
             input_ctx,
             stream_index,
             video_path: path.to_string(),
-            eof_reached: false,
             last_frame_time: crate::utils::get_time_millis() as f64,
             frame_duration_ms,
             accumulated_time: 0.0,
@@ -2381,83 +2281,61 @@ impl VideoDecoder {
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
-        let current_time = crate::utils::get_time_millis() as f64;
-        let delta_time = current_time - self.last_frame_time;
-        self.accumulated_time += delta_time;
-        self.last_frame_time = current_time;
-
+        let now = crate::utils::get_time_millis() as f64;
+        let dt = now - self.last_frame_time;
+        self.accumulated_time += dt;
+        self.last_frame_time = now;
         if self.accumulated_time < self.frame_duration_ms {
             return Ok(false);
         }
         self.accumulated_time -= self.frame_duration_ms;
 
-        if self.eof_reached {
-            self.restart_video()?;
-            self.eof_reached = false;
-        }
-
         for (stream, packet) in self.input_ctx.packets() {
-            if stream.index() == self.stream_index {
-                match self.decoder.send_packet(&packet) {
-                    Ok(_) => {
-                        let mut decoded_frame = ffmpeg::frame::Video::empty();
-                        while self.decoder.receive_frame(&mut decoded_frame).is_ok() {
-                            let rgb_frame = if decoded_frame.format()
-                                != ffmpeg::format::Pixel::RGB24
-                            {
-                                if let Some(ref mut scaler) = self.scaler {
-                                    let mut out = ffmpeg::frame::Video::empty();
-                                    scaler
-                                        .run(&decoded_frame, &mut out)
-                                        .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                                    out
-                                } else {
-                                    let mut new_scaler = ffmpeg::software::scaling::Context::get(
-                                        decoded_frame.format(),
-                                        decoded_frame.width(),
-                                        decoded_frame.height(),
-                                        ffmpeg::format::Pixel::RGB24,
-                                        decoded_frame.width(),
-                                        decoded_frame.height(),
-                                        ffmpeg::software::scaling::flag::Flags::BILINEAR,
-                                    )
-                                    .map_err(|e| anyhow!("Failed to create scaler: {}", e))?;
-                                    let mut out = ffmpeg::frame::Video::empty();
-                                    new_scaler
-                                        .run(&decoded_frame, &mut out)
-                                        .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                                    self.scaler = Some(new_scaler);
-                                    out
-                                }
+            if stream.index() != self.stream_index {
+                continue;
+            }
+            match self.decoder.send_packet(&packet) {
+                Ok(_) => {
+                    let mut decoded = ffmpeg::frame::Video::empty();
+                    while self.decoder.receive_frame(&mut decoded).is_ok() {
+                        let rgb_frame = if decoded.format() != ffmpeg::format::Pixel::RGB24 {
+                            // scale if needed
+                            if let Some(ref mut scaler) = self.scaler {
+                                let mut out = ffmpeg::frame::Video::empty();
+                                scaler
+                                    .run(&decoded, &mut out)
+                                    .map_err(|e| anyhow!("Scaling failed: {}", e))?;
+                                out
                             } else {
-                                decoded_frame.clone()
-                            };
-
-                            unsafe {
-                                gl::BindTexture(gl::TEXTURE_2D, self.texture);
-                                gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-                                gl::TexSubImage2D(
-                                    gl::TEXTURE_2D,
-                                    0,
-                                    0,
-                                    0,
-                                    rgb_frame.width() as i32,
-                                    rgb_frame.height() as i32,
-                                    gl::RGB,
-                                    gl::UNSIGNED_BYTE,
-                                    rgb_frame.data(0).as_ptr() as *const _,
-                                );
+                                decoded.clone()
                             }
+                        } else {
+                            decoded.clone()
+                        };
 
-                            return Ok(true);
+                        unsafe {
+                            gl::BindTexture(gl::TEXTURE_2D, self.texture);
+                            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+                            gl::TexSubImage2D(
+                                gl::TEXTURE_2D,
+                                0,
+                                0,
+                                0,
+                                rgb_frame.width() as i32,
+                                rgb_frame.height() as i32,
+                                gl::RGB,
+                                gl::UNSIGNED_BYTE,
+                                rgb_frame.data(0).as_ptr() as *const _,
+                            );
                         }
+                        return Ok(true);
                     }
-                    Err(ffmpeg::Error::Eof) => {
-                        self.eof_reached = true;
-                        break;
-                    }
-                    Err(_) => continue,
                 }
+                Err(ffmpeg::Error::Eof) => {
+                    self.restart_video()?;
+                    return self.update_frame();
+                }
+                Err(_) => continue,
             }
         }
 
@@ -2465,42 +2343,27 @@ impl VideoDecoder {
     }
 
     fn restart_video(&mut self) -> Result<()> {
-        self.last_frame_time = crate::utils::get_time_millis() as f64;
-        self.accumulated_time = 0.0;
-
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
-            eprintln!("Seeking failed, recreating input context");
-
+            eprintln!("Seek failed; re-opening video");
             self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
-                .map_err(|e| anyhow!("Failed to reopen video file: {}", e))?;
-
+                .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
             let stream = self
                 .input_ctx
                 .streams()
                 .best(ffmpeg::media::Type::Video)
-                .ok_or_else(|| anyhow!("No video stream found after restart"))?;
-
-            self.stream_index = stream.index();
+                .ok_or_else(|| anyhow!("No video stream on restart"))?;
             let context_decoder =
-                ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-                    .map_err(|e| anyhow!("Failed to recreate codec context: {}", e))?;
-            self.decoder = context_decoder
-                .decoder()
-                .video()
-                .map_err(|e| anyhow!("Failed to recreate video decoder: {}", e))?;
+                ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+            self.decoder = context_decoder.decoder().video()?;
         }
-
+        self.accumulated_time = 0.0;
+        self.last_frame_time = crate::utils::get_time_millis() as f64;
         Ok(())
     }
 
     pub fn texture(&self) -> u32 {
         self.texture
     }
-
-    pub fn _dimensions(&self) -> (u32, u32) {
-        (self._width, self._height)
-    }
-
 }
 
 pub fn load_shader(path: &str) -> Result<String> {
@@ -2549,6 +2412,96 @@ void main() {
 }
 </file>
 
+<file path="src/bin/cli.rs">
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+#[derive(Parser)]
+#[command(name = "papyrust")]
+#[command(about = "A small cli for papyrust-daemon")]
+struct Args {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Image {
+        path: String,
+        #[arg(long)]
+        shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+    Video {
+        path: String,
+        #[arg(long)]
+        shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
+        #[arg(long)]
+        mute: bool,
+    },
+    Shader {
+        path: String,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
+
+    let command = match args.command {
+        Commands::Image {
+            path,
+            shader,
+            monitor,
+        } => json!({
+            "SetImage": {
+                "path": path,
+                "shader": shader,
+                "monitor": monitor
+            }
+        }),
+        Commands::Video {
+            path,
+            shader,
+            monitor,
+            mute,
+        } => json!({
+            "SetVideo": {
+                "path": path,
+                "shader": shader,
+                "monitor": monitor,
+                "mute": mute
+            }
+        }),
+        Commands::Shader { path, monitor } => json!({
+            "SetShader": {
+                "path": path,
+                "monitor": monitor
+            }
+        }),
+    };
+
+    writeln!(stream, "{}", command)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    println!("{}", response.trim());
+    Ok(())
+}
+</file>
+
 <file path=".gitignore">
 /target
 repomix-output.xml
@@ -2556,6 +2509,15 @@ flamegraph.svg
 perf.data
 perf.data.old
 stacks.folded
+</file>
+
+<file path="src/ui/mod.rs">
+pub mod components;
+pub mod ipc;
+pub mod loader;
+pub mod pages;
+pub mod state;
+pub mod view;
 </file>
 
 <file path="src/bin/daemon/main.rs">
@@ -2598,6 +2560,9 @@ struct Args {
 
     #[arg(short = 'M', long)]
     fifo: Option<String>,
+
+    #[arg(long, alias = "no-audio")]
+    mute: bool,
 }
 
 fn main() -> Result<()> {
@@ -2640,19 +2605,11 @@ fn main() -> Result<()> {
         args.height,
         args.fifo.as_deref(),
         rx,
+        args.mute,
     )?;
 
     Ok(())
 }
-</file>
-
-<file path="src/ui/mod.rs">
-pub mod components;
-pub mod ipc;
-pub mod loader;
-pub mod pages;
-pub mod state;
-pub mod view;
 </file>
 
 <file path="src/ui/view.rs">

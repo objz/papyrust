@@ -977,7 +977,7 @@ pub fn init(
                     let audio_path = path.clone();
                     std::thread::spawn(move || {
                         let _ = std::process::Command::new("ffplay")
-                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", &audio_path])
+                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", "-loop", "0", &audio_path])
                             .spawn();
                     });
                     last_audio_path = Some(path.clone());
