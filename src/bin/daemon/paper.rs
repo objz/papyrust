@@ -4,6 +4,7 @@ use log::{debug, info};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::process::Child;
 use std::sync::mpsc::Receiver;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_region, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
@@ -887,36 +888,31 @@ pub fn init(
     let conn = Connection::connect_to_env()?;
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
-
     let mut app_state = AppState::new();
     let _registry = conn.display().get_registry(&qh, ());
-
     event_queue.roundtrip(&mut app_state)?;
 
-    if let Some(ref output_manager) = app_state.output_manager {
-        for (id, output_info) in &app_state.outputs {
-            let _xdg_output = output_manager.get_xdg_output(&output_info.output, &qh, *id);
+    if let Some(ref om) = app_state.output_manager {
+        for (id, info) in &app_state.outputs {
+            om.get_xdg_output(&info.output, &qh, *id);
         }
     }
-
     event_queue.roundtrip(&mut app_state)?;
 
     let compositor = app_state
         .compositor
         .as_ref()
         .ok_or_else(|| anyhow!("Compositor not available"))?;
-
     let layer_shell = app_state
         .layer_shell
         .as_ref()
         .ok_or_else(|| anyhow!("Layer shell not available"))?;
-
     let egl_instance = egl::Instance::new(egl::Static);
     let mut monitor_states = HashMap::new();
 
     for output_info in app_state.outputs.values() {
         if let Some(name) = &output_info.name {
-            match create_monitor_state(
+            let ms = create_monitor_state(
                 output_info,
                 compositor,
                 layer_shell,
@@ -925,64 +921,68 @@ pub fn init(
                 &egl_instance,
                 &conn,
                 &qh,
-            ) {
-                Ok(monitor_state) => {
-                    monitor_states.insert(name.clone(), monitor_state);
-                    app_state.total_surfaces += 1;
-                }
-                Err(e) => eprintln!("Failed to create monitor state for {}: {}", name, e),
-            }
+            )?;
+            monitor_states.insert(name.clone(), ms);
+            app_state.total_surfaces += 1;
         }
     }
 
     event_queue.roundtrip(&mut app_state)?;
-
     while app_state.configured_count < app_state.total_surfaces {
         event_queue.blocking_dispatch(&mut app_state)?;
     }
-
     event_queue.roundtrip(&mut app_state)?;
 
-    if fps == 0 {
-        for monitor_state in monitor_states.values() {
-            egl_instance.swap_interval(monitor_state.egl_display, 1)?;
-        }
-    } else {
-        for monitor_state in monitor_states.values() {
-            egl_instance.swap_interval(monitor_state.egl_display, 0)?;
-        }
+    for ms in monitor_states.values() {
+        egl_instance.swap_interval(ms.egl_display, if fps == 0 { 1 } else { 0 })?;
     }
 
-    let mut fifo_reader = if let Some(path) = fifo_path {
-        Some(FifoReader::new(path)?)
-    } else {
-        None
-    };
-
-    info!(
-        "Starting render loop with {} monitors",
-        monitor_states.len()
-    );
+    let mut fifo_reader = fifo_path.map(FifoReader::new).transpose()?;
+    info!("Starting render loop with {} monitors", monitor_states.len());
 
     let mut last_audio_path: Option<String> = None;
+    let mut last_audio_child: Option<Child> = None;
 
     loop {
         let frame_start = utils::get_time_millis();
 
         if let Ok(media_change) = ipc_receiver.try_recv() {
-            // play audio 
             if let MediaType::Video { path, .. } = &media_change.media_type {
                 let effective_mute = mute || media_change.mute;
+
+                if effective_mute || last_audio_path.as_deref() != Some(path.as_str()) {
+                    if let Some(mut child) = last_audio_child.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+
                 if !effective_mute && last_audio_path.as_deref() != Some(path.as_str()) {
                     let audio_path = path.clone();
-                    std::thread::spawn(move || {
-                        let _ = std::process::Command::new("ffplay")
-                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", "-loop", "0", &audio_path])
-                            .spawn();
-                    });
-                    last_audio_path = Some(path.clone());
+                    if let Ok(child) = std::process::Command::new("ffplay")
+                        .args(&[
+                            "-nodisp",
+                            "-autoexit",
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-loop",
+                            "0",
+                            &audio_path,
+                        ])
+                        .spawn()
+                    {
+                        last_audio_child = Some(child);
+                        last_audio_path = Some(path.clone());
+                    }
+                } else if effective_mute {
+                    last_audio_path = None;
                 }
             } else {
+                if let Some(mut child) = last_audio_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
                 last_audio_path = None;
             }
 
@@ -994,11 +994,7 @@ pub fn init(
                         Some(ms.egl_surface),
                         Some(ms.egl_context),
                     )?;
-                    if let Err(e) = ms.renderer.update_media(media_change.media_type) {
-                        eprintln!("Failed to update media for {}: {}", target, e);
-                    }
-                } else {
-                    eprintln!("Monitor {} not found", target);
+                    ms.renderer.update_media(media_change.media_type)?;
                 }
             } else {
                 for ms in monitor_states.values_mut() {
@@ -1008,16 +1004,12 @@ pub fn init(
                         Some(ms.egl_surface),
                         Some(ms.egl_context),
                     )?;
-                    if let Err(e) = ms.renderer.update_media(media_change.media_type.clone()) {
-                        let name = ms.output_info.name.as_deref().unwrap_or("unknown");
-                        eprintln!("Failed to update media for {}: {}", name, e);
-                    }
+                    ms.renderer.update_media(media_change.media_type.clone())?;
                 }
             }
         }
 
         event_queue.dispatch_pending(&mut app_state)?;
-
         for ms in monitor_states.values_mut() {
             egl_instance.make_current(
                 ms.egl_display,
@@ -1025,21 +1017,15 @@ pub fn init(
                 Some(ms.egl_surface),
                 Some(ms.egl_context),
             )?;
-
-            ms.renderer.draw(
-                &mut fifo_reader,
-                ms.output_info.width,
-                ms.output_info.height,
-            )?;
-
+            ms.renderer.draw(&mut fifo_reader, ms.output_info.width, ms.output_info.height)?;
             egl_instance.swap_buffers(ms.egl_display, ms.egl_surface)?;
         }
 
         if fps > 0 {
-            let frame_time = utils::get_time_millis() - frame_start;
+            let elapsed = utils::get_time_millis() - frame_start;
             let target = 1000 / fps as u64;
-            if frame_time < target {
-                utils::sleep_millis(target - frame_time);
+            if elapsed < target {
+                utils::sleep_millis(target - elapsed);
             }
         }
     }

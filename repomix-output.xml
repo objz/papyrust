@@ -856,6 +856,65 @@ fn main() {
 }
 </file>
 
+<file path="src/ui/components/mod.rs">
+pub mod lib_popup;
+pub mod panel;
+</file>
+
+<file path="src/ui/ipc.rs">
+use anyhow::Result;
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
+
+pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+    let cmd = json!({
+        "SetImage": {
+            "path": path,
+            "shader": shader,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+    let cmd = json!({
+        "SetVideo": {
+            "path": path,
+            "shader": shader,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+pub fn set_shader(monitor: String, path: String) -> Result<()> {
+    let cmd = json!({
+        "SetShader": {
+            "path": path,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+fn send_command(cmd: serde_json::Value) -> Result<()> {
+    let mut stream = UnixStream::connect(SOCKET_PATH)?;
+    writeln!(stream, "{}", cmd)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    println!("{}", response.trim());
+    Ok(())
+}
+</file>
+
 <file path="src/bin/daemon/paper.rs">
 use anyhow::{anyhow, Result};
 use khronos_egl as egl;
@@ -1836,7 +1895,7 @@ pub fn init(
                     let audio_path = path.clone();
                     std::thread::spawn(move || {
                         let _ = std::process::Command::new("ffplay")
-                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", "-stream_loop", "-1", &audio_path])
+                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", "-loop", "0", &audio_path])
                             .spawn();
                     });
                     last_audio_path = Some(path.clone());
@@ -1902,65 +1961,6 @@ pub fn init(
             }
         }
     }
-}
-</file>
-
-<file path="src/ui/components/mod.rs">
-pub mod lib_popup;
-pub mod panel;
-</file>
-
-<file path="src/ui/ipc.rs">
-use anyhow::Result;
-use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-
-const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
-
-pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
-    let cmd = json!({
-        "SetImage": {
-            "path": path,
-            "shader": shader,
-            "monitor": monitor
-        }
-    });
-    send_command(cmd)
-}
-
-pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Result<()> {
-    let cmd = json!({
-        "SetVideo": {
-            "path": path,
-            "shader": shader,
-            "monitor": monitor
-        }
-    });
-    send_command(cmd)
-}
-
-pub fn set_shader(monitor: String, path: String) -> Result<()> {
-    let cmd = json!({
-        "SetShader": {
-            "path": path,
-            "monitor": monitor
-        }
-    });
-    send_command(cmd)
-}
-
-fn send_command(cmd: serde_json::Value) -> Result<()> {
-    let mut stream = UnixStream::connect(SOCKET_PATH)?;
-    writeln!(stream, "{}", cmd)?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-
-    println!("{}", response.trim());
-    Ok(())
 }
 </file>
 
@@ -2107,7 +2107,107 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
 }
 </file>
 
+<file path="src/bin/cli.rs">
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+#[derive(Parser)]
+#[command(name = "papyrust")]
+#[command(about = "A small cli for papyrust-daemon")]
+struct Args {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Image {
+        path: String,
+        #[arg(long)]
+        shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+    Video {
+        path: String,
+        #[arg(long)]
+        shader: Option<String>,
+        #[arg(long)]
+        monitor: Option<String>,
+        #[arg(long)]
+        mute: bool,
+    },
+    Shader {
+        path: String,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
+
+    let command = match args.command {
+        Commands::Image {
+            path,
+            shader,
+            monitor,
+        } => json!({
+            "SetImage": {
+                "path": path,
+                "shader": shader,
+                "monitor": monitor
+            }
+        }),
+        Commands::Video {
+            path,
+            shader,
+            monitor,
+            mute,
+        } => json!({
+            "SetVideo": {
+                "path": path,
+                "shader": shader,
+                "monitor": monitor,
+                "mute": mute
+            }
+        }),
+        Commands::Shader { path, monitor } => json!({
+            "SetShader": {
+                "path": path,
+                "monitor": monitor
+            }
+        }),
+    };
+
+    writeln!(stream, "{}", command)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    println!("{}", response.trim());
+    Ok(())
+}
+</file>
+
+<file path=".gitignore">
+/target
+repomix-output.xml
+flamegraph.svg
+perf.data
+perf.data.old
+stacks.folded
+</file>
+
 <file path="src/bin/daemon/media.rs">
+// src/bin/daemon/media.rs
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ffmpeg;
 use std::fs::File;
@@ -2281,6 +2381,7 @@ impl VideoDecoder {
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
+        // Timing
         let now = crate::utils::get_time_millis() as f64;
         let dt = now - self.last_frame_time;
         self.accumulated_time += dt;
@@ -2290,21 +2391,22 @@ impl VideoDecoder {
         }
         self.accumulated_time -= self.frame_duration_ms;
 
+        // Try to read packets & decode
+        let mut saw_any = false;
         for (stream, packet) in self.input_ctx.packets() {
             if stream.index() != self.stream_index {
                 continue;
             }
+            saw_any = true;
             match self.decoder.send_packet(&packet) {
                 Ok(_) => {
                     let mut decoded = ffmpeg::frame::Video::empty();
                     while self.decoder.receive_frame(&mut decoded).is_ok() {
                         let rgb_frame = if decoded.format() != ffmpeg::format::Pixel::RGB24 {
-                            // scale if needed
                             if let Some(ref mut scaler) = self.scaler {
                                 let mut out = ffmpeg::frame::Video::empty();
-                                scaler
-                                    .run(&decoded, &mut out)
-                                    .map_err(|e| anyhow!("Scaling failed: {}", e))?;
+                                scaler.run(&decoded, &mut out)
+                                      .map_err(|e| anyhow!("Scaling failed: {}", e))?;
                                 out
                             } else {
                                 decoded.clone()
@@ -2312,7 +2414,6 @@ impl VideoDecoder {
                         } else {
                             decoded.clone()
                         };
-
                         unsafe {
                             gl::BindTexture(gl::TEXTURE_2D, self.texture);
                             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
@@ -2339,6 +2440,12 @@ impl VideoDecoder {
             }
         }
 
+        // If no packets left, rewind
+        if !saw_any {
+            self.restart_video()?;
+            return self.update_frame();
+        }
+
         Ok(false)
     }
 
@@ -2347,13 +2454,11 @@ impl VideoDecoder {
             eprintln!("Seek failed; re-opening video");
             self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
                 .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
-            let stream = self
-                .input_ctx
+            let stream = self.input_ctx
                 .streams()
                 .best(ffmpeg::media::Type::Video)
                 .ok_or_else(|| anyhow!("No video stream on restart"))?;
-            let context_decoder =
-                ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+            let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
             self.decoder = context_decoder.decoder().video()?;
         }
         self.accumulated_time = 0.0;
@@ -2367,8 +2472,7 @@ impl VideoDecoder {
 }
 
 pub fn load_shader(path: &str) -> Result<String> {
-    let mut file =
-        File::open(path).map_err(|e| anyhow!("Failed to open shader file {}: {}", path, e))?;
+    let mut file = File::open(path).map_err(|e| anyhow!("Failed to open shader file {}: {}", path, e))?;
     let mut source = String::new();
     file.read_to_string(&mut source)
         .map_err(|e| anyhow!("Failed to read shader file {}: {}", path, e))?;
@@ -2410,105 +2514,6 @@ void main() {
 }
 "#
 }
-</file>
-
-<file path="src/bin/cli.rs">
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-
-#[derive(Parser)]
-#[command(name = "papyrust")]
-#[command(about = "A small cli for papyrust-daemon")]
-struct Args {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    Image {
-        path: String,
-        #[arg(long)]
-        shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-    Video {
-        path: String,
-        #[arg(long)]
-        shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
-        #[arg(long)]
-        mute: bool,
-    },
-    Shader {
-        path: String,
-        #[arg(long)]
-        monitor: Option<String>,
-    },
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
-
-    let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;
-
-    let command = match args.command {
-        Commands::Image {
-            path,
-            shader,
-            monitor,
-        } => json!({
-            "SetImage": {
-                "path": path,
-                "shader": shader,
-                "monitor": monitor
-            }
-        }),
-        Commands::Video {
-            path,
-            shader,
-            monitor,
-            mute,
-        } => json!({
-            "SetVideo": {
-                "path": path,
-                "shader": shader,
-                "monitor": monitor,
-                "mute": mute
-            }
-        }),
-        Commands::Shader { path, monitor } => json!({
-            "SetShader": {
-                "path": path,
-                "monitor": monitor
-            }
-        }),
-    };
-
-    writeln!(stream, "{}", command)?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-
-    println!("{}", response.trim());
-    Ok(())
-}
-</file>
-
-<file path=".gitignore">
-/target
-repomix-output.xml
-flamegraph.svg
-perf.data
-perf.data.old
-stacks.folded
 </file>
 
 <file path="src/ui/mod.rs">
