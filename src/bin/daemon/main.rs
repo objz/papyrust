@@ -37,6 +37,9 @@ struct Args {
 
     #[arg(short = 'M', long)]
     fifo: Option<String>,
+
+    #[arg(long, alias = "no-audio")]
+    mute: bool,
 }
 
 fn main() -> Result<()> {
@@ -79,6 +82,7 @@ fn main() -> Result<()> {
         args.height,
         args.fifo.as_deref(),
         rx,
+        args.mute,
     )?;
 
     Ok(())

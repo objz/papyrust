@@ -18,6 +18,8 @@ pub enum IpcCommand {
         path: String,
         shader: Option<String>,
         monitor: Option<String>,
+        #[serde(default)]
+        mute: bool,
     },
     SetShader {
         path: String,
@@ -36,11 +38,11 @@ pub enum IpcResponse {
 pub struct MediaChange {
     pub media_type: MediaType,
     pub monitor: Option<String>,
+    pub mute: bool,
 }
 
 pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     let socket_path = "/tmp/papyrust-daemon.sock";
-
     let _ = std::fs::remove_file(socket_path);
 
     let listener =
@@ -85,6 +87,7 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 let media_change = MediaChange {
                     media_type: MediaType::Image { path, shader },
                     monitor,
+                    mute: false,
                 };
                 match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
@@ -97,10 +100,12 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 path,
                 shader,
                 monitor,
+                mute,
             } => {
                 let media_change = MediaChange {
                     media_type: MediaType::Video { path, shader },
                     monitor,
+                    mute,
                 };
                 match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
@@ -113,6 +118,7 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                 let media_change = MediaChange {
                     media_type: MediaType::Shader(path),
                     monitor,
+                    mute: false,
                 };
                 match tx.send(media_change) {
                     Ok(_) => IpcResponse::Success,
@@ -121,7 +127,6 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                     },
                 }
             }
-
         };
 
         let response_json = serde_json::to_string(&response)?;

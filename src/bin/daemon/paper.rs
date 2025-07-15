@@ -882,6 +882,7 @@ pub fn init(
     _height: u16,
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
+    mute: bool,
 ) -> Result<()> {
     let conn = Connection::connect_to_env()?;
     let mut event_queue = conn.new_event_queue();
@@ -914,7 +915,7 @@ pub fn init(
     let mut monitor_states = HashMap::new();
 
     for output_info in app_state.outputs.values() {
-        if output_info.name.is_some() {
+        if let Some(name) = &output_info.name {
             match create_monitor_state(
                 output_info,
                 compositor,
@@ -926,17 +927,10 @@ pub fn init(
                 &qh,
             ) {
                 Ok(monitor_state) => {
-                    monitor_states
-                        .insert(output_info.name.as_ref().unwrap().clone(), monitor_state);
+                    monitor_states.insert(name.clone(), monitor_state);
                     app_state.total_surfaces += 1;
                 }
-                Err(e) => {
-                    eprintln!(
-                        "Failed to create monitor state for {}: {}",
-                        output_info.name.as_ref().unwrap(),
-                        e
-                    );
-                }
+                Err(e) => eprintln!("Failed to create monitor state for {}: {}", name, e),
             }
         }
     }
@@ -970,48 +964,53 @@ pub fn init(
         monitor_states.len()
     );
 
+    let mut last_audio_path: Option<String> = None;
+
     loop {
         let frame_start = utils::get_time_millis();
 
         if let Ok(media_change) = ipc_receiver.try_recv() {
-            if let Some(target_monitor) = &media_change.monitor {
-                if let Some(monitor_state) = monitor_states.get_mut(target_monitor) {
-                    egl_instance.make_current(
-                        monitor_state.egl_display,
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_context),
-                    )?;
-                    if let Err(e) = monitor_state.renderer.update_media(media_change.media_type) {
-                        eprintln!(
-                            "Failed to update media for monitor {}: {}",
-                            target_monitor, e
-                        );
-                    }
-                } else {
-                    eprintln!("Monitor {} not found", target_monitor);
+            // play audio 
+            if let MediaType::Video { path, .. } = &media_change.media_type {
+                let effective_mute = mute || media_change.mute;
+                if !effective_mute && last_audio_path.as_deref() != Some(path.as_str()) {
+                    let audio_path = path.clone();
+                    std::thread::spawn(move || {
+                        let _ = std::process::Command::new("ffplay")
+                            .args(&["-nodisp", "-autoexit", "-hide_banner", "-loglevel", "error", &audio_path])
+                            .spawn();
+                    });
+                    last_audio_path = Some(path.clone());
                 }
             } else {
-                for monitor_state in monitor_states.values_mut() {
+                last_audio_path = None;
+            }
+
+            if let Some(target) = &media_change.monitor {
+                if let Some(ms) = monitor_states.get_mut(target) {
                     egl_instance.make_current(
-                        monitor_state.egl_display,
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_surface),
-                        Some(monitor_state.egl_context),
+                        ms.egl_display,
+                        Some(ms.egl_surface),
+                        Some(ms.egl_surface),
+                        Some(ms.egl_context),
                     )?;
-                    if let Err(e) = monitor_state
-                        .renderer
-                        .update_media(media_change.media_type.clone())
-                    {
-                        eprintln!(
-                            "Failed to update media for monitor {}: {}",
-                            monitor_state
-                                .output_info
-                                .name
-                                .as_deref()
-                                .unwrap_or("unknown"),
-                            e
-                        );
+                    if let Err(e) = ms.renderer.update_media(media_change.media_type) {
+                        eprintln!("Failed to update media for {}: {}", target, e);
+                    }
+                } else {
+                    eprintln!("Monitor {} not found", target);
+                }
+            } else {
+                for ms in monitor_states.values_mut() {
+                    egl_instance.make_current(
+                        ms.egl_display,
+                        Some(ms.egl_surface),
+                        Some(ms.egl_surface),
+                        Some(ms.egl_context),
+                    )?;
+                    if let Err(e) = ms.renderer.update_media(media_change.media_type.clone()) {
+                        let name = ms.output_info.name.as_deref().unwrap_or("unknown");
+                        eprintln!("Failed to update media for {}: {}", name, e);
                     }
                 }
             }
@@ -1019,28 +1018,28 @@ pub fn init(
 
         event_queue.dispatch_pending(&mut app_state)?;
 
-        for monitor_state in monitor_states.values_mut() {
+        for ms in monitor_states.values_mut() {
             egl_instance.make_current(
-                monitor_state.egl_display,
-                Some(monitor_state.egl_surface),
-                Some(monitor_state.egl_surface),
-                Some(monitor_state.egl_context),
+                ms.egl_display,
+                Some(ms.egl_surface),
+                Some(ms.egl_surface),
+                Some(ms.egl_context),
             )?;
 
-            monitor_state.renderer.draw(
+            ms.renderer.draw(
                 &mut fifo_reader,
-                monitor_state.output_info.width,
-                monitor_state.output_info.height,
+                ms.output_info.width,
+                ms.output_info.height,
             )?;
 
-            egl_instance.swap_buffers(monitor_state.egl_display, monitor_state.egl_surface)?;
+            egl_instance.swap_buffers(ms.egl_display, ms.egl_surface)?;
         }
 
         if fps > 0 {
             let frame_time = utils::get_time_millis() - frame_start;
-            let target_frame_time = 1000 / fps as u64;
-            if frame_time < target_frame_time {
-                utils::sleep_millis(target_frame_time - frame_time);
+            let target = 1000 / fps as u64;
+            if frame_time < target {
+                utils::sleep_millis(target - frame_time);
             }
         }
     }

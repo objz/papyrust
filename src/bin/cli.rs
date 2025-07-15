@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use serde_json;
+use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
@@ -27,6 +27,8 @@ enum Commands {
         shader: Option<String>,
         #[arg(long)]
         monitor: Option<String>,
+        #[arg(long)]
+        mute: bool,
     },
     Shader {
         path: String,
@@ -45,36 +47,32 @@ fn main() -> Result<()> {
             path,
             shader,
             monitor,
-        } => {
-            serde_json::json!({
-                "SetImage": {
-                    "path": path,
-                    "shader": shader,
-                    "monitor": monitor
-                }
-            })
-        }
+        } => json!({
+            "SetImage": {
+                "path": path,
+                "shader": shader,
+                "monitor": monitor
+            }
+        }),
         Commands::Video {
             path,
             shader,
             monitor,
-        } => {
-            serde_json::json!({
-                "SetVideo": {
-                    "path": path,
-                    "shader": shader,
-                    "monitor": monitor
-                }
-            })
-        }
-        Commands::Shader { path, monitor } => {
-            serde_json::json!({
-                "SetShader": {
-                    "path": path,
-                    "monitor": monitor
-                }
-            })
-        }
+            mute,
+        } => json!({
+            "SetVideo": {
+                "path": path,
+                "shader": shader,
+                "monitor": monitor,
+                "mute": mute
+            }
+        }),
+        Commands::Shader { path, monitor } => json!({
+            "SetShader": {
+                "path": path,
+                "monitor": monitor
+            }
+        }),
     };
 
     writeln!(stream, "{}", command)?;
@@ -85,6 +83,5 @@ fn main() -> Result<()> {
     reader.read_line(&mut response)?;
 
     println!("{}", response.trim());
-
     Ok(())
 }
