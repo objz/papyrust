@@ -127,6 +127,8 @@ struct MediaRenderer {
     shader_program: u32,
     media_texture: Option<u32>,
     video_decoder: Option<VideoDecoder>,
+    media_width: u32,
+    media_height: u32,
     _vbo: u32,
     _ebo: u32,
     start_time: u64,
@@ -158,34 +160,38 @@ impl MediaRenderer {
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
         }
 
-        let (shader_program, media_texture, video_decoder) =
+        let (shader_program, media_texture, video_decoder, media_width, media_height) =
             if media_type == MediaType::Shader("default".to_string()) {
                 let program = Self::default_shader()?;
-                (program, None, None)
+                (program, None, None, 0, 0)
             } else {
                 match &media_type {
-                    MediaType::Shader(shader_path) => {
-                        let program = Self::create_pure_shader(shader_path)?;
-                        (program, None, None)
+                    MediaType::Shader(path) => {
+                        let program = Self::create_pure_shader(path)?;
+                        (program, None, None, 0, 0)
                     }
                     MediaType::Image { path, shader } => {
+                        let img = image::open(path)
+                            .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
+                        let (w, h) = (img.width(), img.height());
                         let texture = ImageLoader::load_texture(path)?;
-                        let program = if let Some(shader_path) = shader {
-                            Self::create_media_shader(shader_path)?
+                        let program = if let Some(s) = shader {
+                            Self::create_media_shader(s)?
                         } else {
                             Self::create_default_shader()?
                         };
-                        (program, Some(texture), None)
+                        (program, Some(texture), None, w, h)
                     }
                     MediaType::Video { path, shader } => {
                         let decoder = VideoDecoder::new(path)?;
+                        let (w, h) = (decoder.width(), decoder.height());
                         let texture = decoder.texture();
-                        let program = if let Some(shader_path) = shader {
-                            Self::create_media_shader(shader_path)?
+                        let program = if let Some(s) = shader {
+                            Self::create_media_shader(s)?
                         } else {
                             Self::create_default_shader()?
                         };
-                        (program, Some(texture), Some(decoder))
+                        (program, Some(texture), Some(decoder), w, h)
                     }
                 }
             };
@@ -196,39 +202,41 @@ impl MediaRenderer {
             shader_program,
             media_texture,
             video_decoder,
+            media_width,
+            media_height,
             _vbo: vbo,
             _ebo: ebo,
             start_time,
             media_type,
         })
     }
-
-    fn transform(&self, transform: wl_output::Transform) {
-        let orig: [f32; 16] = [
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
-        ];
-        let mut verts = orig;
-        for i in 0..4 {
-            let x = orig[i * 4];
-            let y = orig[i * 4 + 1];
-            let u = orig[i * 4 + 2];
-            let v = orig[i * 4 + 3];
-            let (nx, ny, nu, nv) = match transform {
-                wl_output::Transform::Normal => (x, y, u, v),
-                wl_output::Transform::_90 => (y, -x, v, 1.0 - u),
-                wl_output::Transform::_180 => (-x, -y, 1.0 - u, 1.0 - v),
-                wl_output::Transform::_270 => (-y, x, 1.0 - v, u),
-                wl_output::Transform::Flipped => (-x, y, 1.0 - u, v),
-                wl_output::Transform::Flipped90 => (y, x, v, u),
-                wl_output::Transform::Flipped180 => (x, -y, u, 1.0 - v),
-                wl_output::Transform::Flipped270 => (-y, -x, 1.0 - v, 1.0 - u),
-                _ => (x, y, u, v),
-            };
-            verts[i * 4] = nx;
-            verts[i * 4 + 1] = ny;
-            verts[i * 4 + 2] = nu;
-            verts[i * 4 + 3] = nv;
+    fn transform(&self, transform: wl_output::Transform, ow: i32, oh: i32) {
+        let sw = ow as f32;
+        let sh = oh as f32;
+        let iw = self.media_width as f32;
+        let ih = self.media_height as f32;
+        if iw <= 0.0 || ih <= 0.0 {
+            return; 
         }
+
+        let scale_factor = f32::max(sw / iw, sh / ih);
+
+        let ndc_w = (iw * scale_factor) / sw;
+        let ndc_h = (ih * scale_factor) / sh;
+
+        let (sx, sy) = match transform {
+            wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270 => (ndc_h, ndc_w),
+            _ => (ndc_w, ndc_h),
+        };
+
+        // quad vertices
+        let verts: [f32; 16] = [
+            -sx, sy, 0.0, 1.0, -sx, -sy, 0.0, 0.0, sx, -sy, 1.0, 0.0, sx, sy, 1.0, 1.0,
+        ];
+
         unsafe {
             gl::BindBuffer(gl::ARRAY_BUFFER, self._vbo);
             gl::BufferData(
@@ -239,7 +247,6 @@ impl MediaRenderer {
             );
         }
     }
-
     fn default_shader() -> Result<u32> {
         let vert_source = r#"
             #version 100
@@ -274,31 +281,36 @@ impl MediaRenderer {
         }
         self.video_decoder = None;
 
-        let (shader_program, media_texture, video_decoder) = match &new_media_type {
-            MediaType::Shader(shader_path) => {
-                let program = Self::create_pure_shader(shader_path)?;
-                (program, None, None)
-            }
-            MediaType::Image { path, shader } => {
-                let texture = ImageLoader::load_texture(path)?;
-                let program = if let Some(shader_path) = shader {
-                    Self::create_media_shader(shader_path)?
-                } else {
-                    Self::create_default_shader()?
-                };
-                (program, Some(texture), None)
-            }
-            MediaType::Video { path, shader } => {
-                let decoder = VideoDecoder::new(path)?;
-                let texture = decoder.texture();
-                let program = if let Some(shader_path) = shader {
-                    Self::create_media_shader(shader_path)?
-                } else {
-                    Self::create_default_shader()?
-                };
-                (program, Some(texture), Some(decoder))
-            }
-        };
+        let (shader_program, media_texture, video_decoder, media_width, media_height) =
+            match &new_media_type {
+                MediaType::Shader(path) => {
+                    let program = Self::create_pure_shader(path)?;
+                    (program, None, None, 0, 0)
+                }
+                MediaType::Image { path, shader } => {
+                    let img = image::open(path)
+                        .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
+                    let (w, h) = (img.width(), img.height());
+                    let texture = ImageLoader::load_texture(path)?;
+                    let program = if let Some(s) = shader {
+                        Self::create_media_shader(s)?
+                    } else {
+                        Self::create_default_shader()?
+                    };
+                    (program, Some(texture), None, w, h)
+                }
+                MediaType::Video { path, shader } => {
+                    let decoder = VideoDecoder::new(path)?;
+                    let (w, h) = (decoder.width(), decoder.height());
+                    let texture = decoder.texture();
+                    let program = if let Some(s) = shader {
+                        Self::create_media_shader(s)?
+                    } else {
+                        Self::create_default_shader()?
+                    };
+                    (program, Some(texture), Some(decoder), w, h)
+                }
+            };
 
         unsafe {
             gl::DeleteProgram(self.shader_program);
@@ -307,11 +319,12 @@ impl MediaRenderer {
         self.shader_program = shader_program;
         self.media_texture = media_texture;
         self.video_decoder = video_decoder;
+        self.media_width = media_width;
+        self.media_height = media_height;
         self.media_type = new_media_type;
 
         Ok(())
     }
-
     fn create_pure_shader(shader_path: &str) -> Result<u32> {
         let raw = load_shader(shader_path)?;
         let mut version_directive: Option<&str> = None;
@@ -585,7 +598,7 @@ impl MediaRenderer {
                     }
                 }
             }
-            self.transform(transform);
+            self.transform(transform, output_width, output_height);
             gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
         }
         Ok(())
@@ -688,12 +701,19 @@ impl Dispatch<wl_output::WlOutput, u32> for AppState {
         if let Some(info) = state.outputs.get_mut(id) {
             match event {
                 wl_output::Event::Geometry { transform, .. } => {
-                    info.transform = transform.into_result().unwrap_or(wl_output::Transform::Normal);
+                    info.transform = transform
+                        .into_result()
+                        .unwrap_or(wl_output::Transform::Normal);
                 }
                 wl_output::Event::Scale { factor } => {
                     info.scale = factor;
                 }
-                wl_output::Event::Mode { flags, width, height, .. } => {
+                wl_output::Event::Mode {
+                    flags,
+                    width,
+                    height,
+                    ..
+                } => {
                     if let Ok(m) = flags.into_result() {
                         if m.contains(wl_output::Mode::Current) {
                             info.width = width;

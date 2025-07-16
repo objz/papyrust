@@ -1,5 +1,3 @@
-
-// src/bin/daemon/media.rs
 use anyhow::{anyhow, Result};
 use ffmpeg_next as ffmpeg;
 use std::fs::File;
@@ -260,6 +258,12 @@ impl VideoDecoder {
 
     pub fn texture(&self) -> u32 {
         self.texture
+    }
+    pub fn width(&self) -> u32 {
+        self._width
+    }
+    pub fn height(&self) -> u32 {
+        self._height
     }
 }
 
