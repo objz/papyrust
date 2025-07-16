@@ -27,6 +27,8 @@ struct OutputInfo {
     width: i32,
     height: i32,
     name: Option<String>,
+    transform: wl_output::Transform,
+    scale: i32,
 }
 
 #[derive(Debug)]
@@ -199,6 +201,43 @@ impl MediaRenderer {
             start_time,
             media_type,
         })
+    }
+
+    fn transform(&self, transform: wl_output::Transform) {
+        let orig: [f32; 16] = [
+            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+        ];
+        let mut verts = orig;
+        for i in 0..4 {
+            let x = orig[i * 4];
+            let y = orig[i * 4 + 1];
+            let u = orig[i * 4 + 2];
+            let v = orig[i * 4 + 3];
+            let (nx, ny, nu, nv) = match transform {
+                wl_output::Transform::Normal => (x, y, u, v),
+                wl_output::Transform::_90 => (y, -x, v, 1.0 - u),
+                wl_output::Transform::_180 => (-x, -y, 1.0 - u, 1.0 - v),
+                wl_output::Transform::_270 => (-y, x, 1.0 - v, u),
+                wl_output::Transform::Flipped => (-x, y, 1.0 - u, v),
+                wl_output::Transform::Flipped90 => (y, x, v, u),
+                wl_output::Transform::Flipped180 => (x, -y, u, 1.0 - v),
+                wl_output::Transform::Flipped270 => (-y, -x, 1.0 - v, 1.0 - u),
+                _ => (x, y, u, v),
+            };
+            verts[i * 4] = nx;
+            verts[i * 4 + 1] = ny;
+            verts[i * 4 + 2] = nu;
+            verts[i * 4 + 3] = nv;
+        }
+        unsafe {
+            gl::BindBuffer(gl::ARRAY_BUFFER, self._vbo);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (verts.len() * std::mem::size_of::<f32>()) as isize,
+                verts.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+        }
     }
 
     fn default_shader() -> Result<u32> {
@@ -492,6 +531,7 @@ impl MediaRenderer {
         fifo_reader: &mut Option<FifoReader>,
         output_width: i32,
         output_height: i32,
+        transform: wl_output::Transform,
     ) -> Result<()> {
         unsafe {
             gl::UseProgram(self.shader_program);
@@ -545,7 +585,7 @@ impl MediaRenderer {
                     }
                 }
             }
-
+            self.transform(transform);
             gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
         }
         Ok(())
@@ -591,6 +631,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                                 width: 0,
                                 height: 0,
                                 name: None,
+                                transform: wl_output::Transform::Normal,
+                                scale: 1,
                             },
                         );
                     }
@@ -639,27 +681,28 @@ impl Dispatch<wl_output::WlOutput, u32> for AppState {
         state: &mut Self,
         _: &wl_output::WlOutput,
         event: wl_output::Event,
-        output_id: &u32,
+        id: &u32,
         _: &Connection,
         _: &QueueHandle<AppState>,
     ) {
-        match event {
-            wl_output::Event::Mode {
-                flags,
-                width,
-                height,
-                refresh: _,
-            } => {
-                if let Ok(mode_flags) = flags.into_result() {
-                    if mode_flags.contains(wl_output::Mode::Current) {
-                        if let Some(output_info) = state.outputs.get_mut(output_id) {
-                            output_info.width = width;
-                            output_info.height = height;
+        if let Some(info) = state.outputs.get_mut(id) {
+            match event {
+                wl_output::Event::Geometry { transform, .. } => {
+                    info.transform = transform.into_result().unwrap_or(wl_output::Transform::Normal);
+                }
+                wl_output::Event::Scale { factor } => {
+                    info.scale = factor;
+                }
+                wl_output::Event::Mode { flags, width, height, .. } => {
+                    if let Ok(m) = flags.into_result() {
+                        if m.contains(wl_output::Mode::Current) {
+                            info.width = width;
+                            info.height = height;
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 }
@@ -784,6 +827,9 @@ fn create_monitor_state(
     render_region.add(0, 0, output_info.width, output_info.height);
     surface.set_opaque_region(Some(&render_region));
     surface.set_input_region(Some(&input_region));
+
+    surface.set_buffer_transform(output_info.transform);
+    surface.set_buffer_scale(output_info.scale);
 
     let layer = match layer_name {
         Some("top") => zwlr_layer_shell_v1::Layer::Top,
@@ -938,7 +984,10 @@ pub fn init(
     }
 
     let mut fifo_reader = fifo_path.map(FifoReader::new).transpose()?;
-    info!("Starting render loop with {} monitors", monitor_states.len());
+    info!(
+        "Starting render loop with {} monitors",
+        monitor_states.len()
+    );
 
     let mut last_audio_path: Option<String> = None;
     let mut last_audio_child: Option<Child> = None;
@@ -1017,7 +1066,12 @@ pub fn init(
                 Some(ms.egl_surface),
                 Some(ms.egl_context),
             )?;
-            ms.renderer.draw(&mut fifo_reader, ms.output_info.width, ms.output_info.height)?;
+            ms.renderer.draw(
+                &mut fifo_reader,
+                ms.output_info.width,
+                ms.output_info.height,
+                ms.output_info.transform,
+            )?;
             egl_instance.swap_buffers(ms.egl_display, ms.egl_surface)?;
         }
 
