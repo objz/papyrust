@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use anyhow::Result;
 use clap::Parser;
 use log::info;
@@ -12,6 +13,26 @@ mod utils;
 mod gl_bindings {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
 }
+#[derive(ValueEnum, Clone, Debug)]
+enum Layer {
+    Bottom,
+    Top,
+    Overlay,
+    Background,
+}
+
+
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Layer::Bottom => "bottom",
+            Layer::Top => "top",
+            Layer::Overlay => "overlay",
+            Layer::Background => "background",
+        };
+        write!(f, "{}", s)
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -23,11 +44,11 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long, default_value = "0")]
+    #[arg(short, long, default_value = "30")]
     fps: u16,
 
     #[arg(short, long)]
-    layer: Option<String>,
+    layer: Option<Layer>,
 
     #[arg(short = 'W', long, default_value = "0")]
     width: u16,
@@ -77,7 +98,7 @@ fn main() -> Result<()> {
     paper::init(
         init_media,
         args.fps,
-        args.layer.as_deref(),
+        args.layer.as_ref().map(|l| l.to_string()).as_deref(),
         args.width,
         args.height,
         args.fifo.as_deref(),
