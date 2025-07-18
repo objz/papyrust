@@ -1,3 +1,4 @@
+use crate::utils;
 use anyhow::{anyhow, Result};
 use khronos_egl as egl;
 use log::{debug, info};
@@ -14,9 +15,9 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 use crate::gl_bindings as gl;
 use crate::ipc::MediaChange;
 use crate::media::{
-    default_shader, load_shader, vertex_shader, ImageLoader, MediaType, VideoDecoder,
+    load_shader, ImageLoader, MediaType, VideoDecoder,
 };
-use crate::utils;
+use crate::utils::{default_shader, vertex_shader};
 
 const N_SAMPLES: usize = 44100 / 25;
 
