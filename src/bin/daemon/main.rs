@@ -8,7 +8,7 @@ use std::thread;
 
 mod ipc;
 mod media;
-mod paper;
+mod wayland;
 mod utils;
 mod gl_bindings {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
@@ -95,7 +95,7 @@ fn main() -> Result<()> {
 
     info!("Starting Papyrust daemon");
 
-    paper::init(
+    wayland::init(
         init_media,
         args.fps,
         args.layer.as_ref().map(|l| l.to_string()).as_deref(),
