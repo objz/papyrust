@@ -50,12 +50,6 @@ struct Args {
     #[arg(short, long)]
     layer: Option<Layer>,
 
-    #[arg(short = 'W', long, default_value = "0")]
-    width: u16,
-
-    #[arg(short = 'H', long, default_value = "0")]
-    height: u16,
-
     #[arg(short = 'M', long)]
     fifo: Option<String>,
 
@@ -99,8 +93,6 @@ fn main() -> Result<()> {
         init_media,
         args.fps,
         args.layer.as_ref().map(|l| l.to_string()).as_deref(),
-        args.width,
-        args.height,
         args.fifo.as_deref(),
         rx,
         args.mute,

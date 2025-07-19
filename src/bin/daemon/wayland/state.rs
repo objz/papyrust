@@ -9,7 +9,6 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
-    _id: u32,
     pub output: wl_output::WlOutput,
     pub width: i32,
     pub height: i32,
@@ -63,7 +62,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         state.outputs.insert(
                             name,
                             OutputInfo {
-                                _id: name,
                                 output,
                                 width: 0,
                                 height: 0,

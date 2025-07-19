@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use khronos_egl as egl;
-use wayland_client::protocol::{wl_compositor, wl_surface};
+use wayland_client::protocol::{wl_compositor};
 use wayland_client::{Connection, Proxy, QueueHandle};
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1};
 
 use crate::media::{
     MediaType
@@ -18,9 +18,6 @@ pub struct MonitorState {
     pub egl_context: egl::Context,
     pub renderer: MediaRenderer,
     pub output_info: OutputInfo,
-    _surface: wl_surface::WlSurface,
-    _layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-    _egl_surface_wrapper: wayland_egl::WlEglSurface,
 }
 
 
@@ -38,7 +35,9 @@ pub fn create_monitor_state(
 
     let input_region = compositor.create_region(qh, ());
     let render_region = compositor.create_region(qh, ());
+
     render_region.add(0, 0, output_info.width, output_info.height);
+
     surface.set_opaque_region(Some(&render_region));
     surface.set_input_region(Some(&input_region));
 
@@ -63,6 +62,7 @@ pub fn create_monitor_state(
     );
 
     layer_surface.set_exclusive_zone(-1);
+
     layer_surface.set_size(output_info.width as u32, output_info.height as u32);
     surface.commit();
 
@@ -129,8 +129,5 @@ pub fn create_monitor_state(
         egl_context: context,
         renderer,
         output_info: output_info.clone(),
-        _surface: surface,
-        _layer_surface: layer_surface,
-        _egl_surface_wrapper: egl_surface_wrapper,
     })
 }

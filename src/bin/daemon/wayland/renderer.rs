@@ -13,13 +13,12 @@ use crate::utils::{default_shader, vertex_shader};
 
 
 pub struct MediaRenderer {
-    shader_program: u32,
-    media_texture: Option<u32>,
-    video_decoder: Option<VideoDecoder>,
+    shader: u32,
+    texture: Option<u32>,
+    decoder: Option<VideoDecoder>,
+    vbo: u32,
     media_width: u32,
     media_height: u32,
-    _vbo: u32,
-    _ebo: u32,
     start_time: u64,
     media_type: MediaType,
 }
@@ -85,16 +84,15 @@ impl MediaRenderer {
                 }
             };
 
-        let (vbo, ebo) = Self::setup_geometry()?;
+        let (vbo, _) = Self::setup_geometry()?;
 
         Ok(Self {
-            shader_program,
-            media_texture,
-            video_decoder,
+            shader: shader_program,
+            texture: media_texture,
+            decoder: video_decoder,
             media_width,
             media_height,
-            _vbo: vbo,
-            _ebo: ebo,
+            vbo,
             start_time,
             media_type,
         })
@@ -127,7 +125,7 @@ impl MediaRenderer {
         ];
 
         unsafe {
-            gl::BindBuffer(gl::ARRAY_BUFFER, self._vbo);
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
             gl::BufferData(
                 gl::ARRAY_BUFFER,
                 (verts.len() * std::mem::size_of::<f32>()) as isize,
@@ -163,12 +161,12 @@ impl MediaRenderer {
     pub fn update_media(&mut self, new_media_type: MediaType) -> Result<()> {
         eprintln!("Updating media to: {:?}", new_media_type);
 
-        if let Some(texture) = self.media_texture {
+        if let Some(texture) = self.texture {
             unsafe {
                 gl::DeleteTextures(1, &texture);
             }
         }
-        self.video_decoder = None;
+        self.decoder = None;
 
         let (shader_program, media_texture, video_decoder, media_width, media_height) =
             match &new_media_type {
@@ -202,12 +200,12 @@ impl MediaRenderer {
             };
 
         unsafe {
-            gl::DeleteProgram(self.shader_program);
+            gl::DeleteProgram(self.shader);
         }
 
-        self.shader_program = shader_program;
-        self.media_texture = media_texture;
-        self.video_decoder = video_decoder;
+        self.shader = shader_program;
+        self.texture = media_texture;
+        self.decoder = video_decoder;
         self.media_width = media_width;
         self.media_height = media_height;
         self.media_type = new_media_type;
@@ -436,33 +434,33 @@ impl MediaRenderer {
         transform: wl_output::Transform,
     ) -> Result<()> {
         unsafe {
-            gl::UseProgram(self.shader_program);
+            gl::UseProgram(self.shader);
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::Viewport(0, 0, output_width, output_height);
 
-            if let Some(ref mut decoder) = self.video_decoder {
+            if let Some(ref mut decoder) = self.decoder {
                 decoder.update_frame()?;
             }
 
             let time_loc =
-                gl::GetUniformLocation(self.shader_program, b"time\0".as_ptr() as *const i8);
+                gl::GetUniformLocation(self.shader, b"time\0".as_ptr() as *const i8);
             if time_loc != -1 {
                 let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
                 gl::Uniform1f(time_loc, time);
             }
 
             let resolution_loc =
-                gl::GetUniformLocation(self.shader_program, b"resolution\0".as_ptr() as *const i8);
+                gl::GetUniformLocation(self.shader, b"resolution\0".as_ptr() as *const i8);
             if resolution_loc != -1 {
                 gl::Uniform2f(resolution_loc, output_width as f32, output_height as f32);
             }
 
-            if let Some(texture) = self.media_texture {
+            if let Some(texture) = self.texture {
                 gl::ActiveTexture(gl::TEXTURE0);
                 gl::BindTexture(gl::TEXTURE_2D, texture);
 
                 let media_loc =
-                    gl::GetUniformLocation(self.shader_program, b"u_media\0".as_ptr() as *const i8);
+                    gl::GetUniformLocation(self.shader, b"u_media\0".as_ptr() as *const i8);
                 if media_loc != -1 {
                     gl::Uniform1i(media_loc, 0);
                 }
@@ -470,7 +468,7 @@ impl MediaRenderer {
 
             if let Some(reader) = fifo_reader {
                 let fifo_loc =
-                    gl::GetUniformLocation(self.shader_program, b"fifo\0".as_ptr() as *const i8);
+                    gl::GetUniformLocation(self.shader, b"fifo\0".as_ptr() as *const i8);
                 if fifo_loc != -1 {
                     if let Ok(Some(sample)) = reader.read_sample() {
                         let left_val = if !sample.left.is_empty() {

@@ -25,8 +25,6 @@ pub fn init(
     media_type: MediaType,
     fps: u16,
     layer_name: Option<&str>,
-    _width: u16,
-    _height: u16,
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
     mute: bool,
@@ -35,7 +33,6 @@ pub fn init(
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
     let mut app_state = AppState::new();
-    let _registry = conn.display().get_registry(&qh, ());
     event_queue.roundtrip(&mut app_state)?;
 
     if let Some(ref om) = app_state.output_manager {
