@@ -245,84 +245,56 @@ impl VideoDecoder {
         self.last_frame_updated = false;
         let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
 
-        let playback_time = current_time - self.playback_start_time;
-        
-        let looped_time = if self.video_duration > 0.0 {
-            let new_loop_count = (playback_time / self.video_duration) as u64;
-            if new_loop_count > self.loop_count {
-                self.loop_count = new_loop_count;
-                tracing::debug!(event = "video_loop", loop_count = self.loop_count, "Video loop detected");
-            }
-            playback_time % self.video_duration
-        } else {
-            playback_time
-        };
-        
-        let video_time = looped_time + self.video_start_time;
-
         if let Some(forced_fps) = self.forced_fps {
             let min_frame_duration = 1.0 / forced_fps;
             let elapsed = current_time - self.last_forced_frame_time;
-            
+
             if elapsed < min_frame_duration {
                 return Ok(false);
             }
-            
+
             self.last_forced_frame_time = current_time;
         }
 
-        loop {
-            if let Some(ref frame) = self.current_frame {
-                let frame_pts = frame.pts().unwrap_or(0);
-                let frame_time = frame_pts as f64 * self.time_base;
+        if let Some(ref frame) = self.current_frame {
+            if let Some(ref next_frame) = self.next_frame {
+                self.current_frame = self.next_frame.take();
+                self.upload_current_frame();
+                self.last_frame_updated = true;
+                self.frame_count += 1;
 
-                if let Some(ref next_frame) = self.next_frame {
-                    let next_pts = next_frame.pts().unwrap_or(0);
-                    let next_time = next_pts as f64 * self.time_base;
-
-                    if video_time >= next_time {
-                        self.current_frame = self.next_frame.take();
-                        self.upload_current_frame();
-                        self.last_frame_updated = true;
-                        self.frame_count += 1;
-                        
-                        if self.decode_frame_to_buffer()? {
-                            continue;
-                        } else {
-                            tracing::debug!(event = "video_restart_eof", "Video ended; restarting for loop");
-                            self.restart_video()?;
-                            continue;
-                        }
-                    }
-                    return Ok(self.last_frame_updated);
-                } else {
-                    if self.decode_frame_to_buffer()? {
-                        continue;
-                    } else {
-                        tracing::debug!(event = "video_restart_eof", "Video ended; restarting for loop");
-                        self.restart_video()?;
-                        continue;
-                    }
-                }
+                self.decode_next_frame()?;
+                return Ok(self.last_frame_updated);
             } else {
-                if self.decode_frame_to_buffer()? {
-                    if self.next_frame.is_some() {
-                        self.current_frame = self.next_frame.take();
-                        self.upload_current_frame();
-                        self.last_frame_updated = true;
-                        self.frame_count += 1;
-                        return Ok(true);
-                    }
-                } else {
-                    tracing::debug!(
-                        event = "video_restart_no_frames",
-                        "No initial frames; restarting"
-                    );
-                    self.restart_video()?;
-                    continue;
-                }
+                self.decode_next_frame()?;
+                return Ok(self.last_frame_updated);
+            }
+        } else {
+            self.decode_next_frame()?;
+            if self.next_frame.is_some() {
+                self.current_frame = self.next_frame.take();
+                self.upload_current_frame();
+                self.last_frame_updated = true;
+                self.frame_count += 1;
+                return Ok(true);
             }
         }
+
+        Ok(false)
+    }
+
+    fn decode_next_frame(&mut self) -> Result<()> {
+        if !self.decode_frame_to_buffer()? {
+            self.loop_count += 1;
+            tracing::debug!(
+                event = "video_loop",
+                loop_count = self.loop_count,
+                "Video restarted for loop"
+            );
+            self.restart_video()?;
+            self.decode_frame_to_buffer()?;
+        }
+        Ok(())
     }
 
     fn decode_frame_to_buffer(&mut self) -> Result<bool> {
@@ -330,16 +302,9 @@ impl VideoDecoder {
             return Ok(false);
         }
 
-        let mut packets_processed = 0;
         for (stream, packet) in self.input_ctx.packets() {
             if stream.index() != self.stream_index {
                 continue;
-            }
-
-            packets_processed += 1;
-            if packets_processed > 1000 {
-                tracing::warn!(event = "video_decode_limit", "Reached packet processing limit");
-                break;
             }
 
             match self.decoder.send_packet(&packet) {
@@ -353,22 +318,15 @@ impl VideoDecoder {
                 }
                 Err(ffmpeg::Error::Eof) => {
                     self.reached_eof = true;
-                    tracing::debug!(event = "video_reached_eof", "Reached EOF while buffering");
                     return Ok(false);
                 }
-                Err(e) => {
-                    tracing::debug!(event = "video_decode_error", error = %e, "Decode error, continuing");
+                Err(_) => {
                     continue;
                 }
             }
         }
 
         self.reached_eof = true;
-        tracing::debug!(
-            event = "video_reached_eof_no_packets",
-            packets_processed,
-            "No more packets available; EOF assumed"
-        );
         Ok(false)
     }
 
@@ -414,44 +372,25 @@ impl VideoDecoder {
     }
 
     fn restart_video(&mut self) -> Result<()> {
-        tracing::debug!(
-            event = "video_restart", 
-            path = %self.video_path, 
-            loop_count = self.loop_count,
-            "Restarting video playback"
-        );
-
         self.current_frame = None;
         self.next_frame = None;
         self.reached_eof = false;
 
-        if let Err(e) = self.input_ctx.seek(0, 0..i64::MAX) {
-            tracing::warn!(
-                event = "video_seek_failed", 
-                error = %e,
-                "Seek failed; re-opening video file"
-            );
-            
-            self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
-                .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
-                
-            let stream = self
-                .input_ctx
-                .streams()
-                .best(ffmpeg::media::Type::Video)
-                .ok_or_else(|| anyhow!("No video stream on restart"))?;
-                
-            let context_decoder =
-                ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
-            self.decoder = context_decoder.decoder().video()?;
-        }
+        self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
+            .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
 
-        let _ = self.decoder.send_eof();
-        let mut dummy_frame = ffmpeg::frame::Video::empty();
-        while self.decoder.receive_frame(&mut dummy_frame).is_ok() {
-        }
+        let stream = self
+            .input_ctx
+            .streams()
+            .best(ffmpeg::media::Type::Video)
+            .ok_or_else(|| anyhow!("No video stream on restart"))?;
 
-        tracing::debug!(event = "video_restart_complete", "Video restart completed successfully");
+        self.stream_index = stream.index();
+
+        let context_decoder =
+            ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        self.decoder = context_decoder.decoder().video()?;
+
         Ok(())
     }
 

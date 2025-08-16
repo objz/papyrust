@@ -146,7 +146,6 @@ pub fn init(
     loop {
         let frame_start = utils::get_time_millis();
 
-        // Process pending events & configs
         event_queue.dispatch_pending(&mut app_state)?;
         for ms in monitor_states.values_mut() {
             if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id)
@@ -163,7 +162,6 @@ pub fn init(
             }
         }
 
-        // IPC: media change
         if let Ok(media_change) = ipc_receiver.try_recv() {
             let new_has_video = matches!(media_change.media_type, MediaType::Video { .. });
             if has_video != new_has_video {
@@ -281,41 +279,34 @@ pub fn init(
 
         frame_count += 1;
 
-        // Frame pacing
-        if has_video && fps == 0 {
-            let elapsed = utils::get_time_millis() - frame_start;
-            let min_frame_time = 8;
-            if elapsed < min_frame_time {
-                utils::sleep_millis(min_frame_time - elapsed);
-            }
-        } else if fps > 0 {
-            let elapsed = utils::get_time_millis() - frame_start;
-            if elapsed < target_frame_time {
-                utils::sleep_millis(target_frame_time - elapsed);
+        if has_video {
+            if fps == 0 {
+                let elapsed = utils::get_time_millis() - frame_start;
+                let target_frame_time = if any_video_updated { 16 } else { 33 };
+                if elapsed < target_frame_time {
+                    utils::sleep_millis(target_frame_time - elapsed);
+                }
+            } else {
+                let elapsed = utils::get_time_millis() - frame_start;
+                if elapsed < target_frame_time {
+                    utils::sleep_millis(target_frame_time - elapsed);
+                }
             }
         } else {
+            let elapsed = utils::get_time_millis() - frame_start;
             let adaptive_frame_time = if any_video_updated {
                 target_frame_time
             } else {
                 target_frame_time * 2
             };
-            let elapsed = utils::get_time_millis() - frame_start;
             if elapsed < adaptive_frame_time {
                 utils::sleep_millis(adaptive_frame_time - elapsed);
             }
         }
-
         if frame_count % 300 == 0 {
-
             let now = utils::get_time_millis();
             let _fps_actual = 300000 / (now - last_fps_check + 1);
             last_fps_check = now;
-
-            tracing::debug!(
-                event = "render_heartbeat",
-                frames = frame_count,
-                "Render loop heartbeat"
-            );
         }
     }
 }
