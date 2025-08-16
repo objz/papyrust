@@ -59,15 +59,14 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    // NEW: structured logging
-    let _ = LogTracer::init(); // forward `log` records into `tracing`
+    let _ = LogTracer::init(); 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("papyrust=info,wayland_client=warn"));
-    fmt()
+    let _ = fmt()
         .with_env_filter(filter)
         .with_target(true)
         .compact()
-        .init();
+        .try_init();
 
     let args = Args::parse();
 

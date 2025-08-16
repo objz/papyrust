@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::{debug, info};
 use std::collections::HashMap;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_region, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, Proxy};
@@ -201,7 +201,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, Option<String>> for App
                 let surface_id = surface.id().protocol_id();
                 let output_name = output_name.clone().unwrap_or_else(|| format!("unknown-{}", surface_id));
                 
-                eprintln!("Layer surface {} (output {}) configured: {}x{}", surface_id, output_name, width, height);
+                info!("Layer surface {} (output {}) configured: {}x{}", surface_id, output_name, width, height);
                 
                 state.layer_surface_configs.insert(surface_id, (width, height));
                 state.surface_to_output.insert(surface_id, output_name);
