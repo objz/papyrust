@@ -1,11 +1,9 @@
 use log::debug;
 use std::collections::HashMap;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_region, wl_registry, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, Proxy};
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
-
-
 
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
@@ -15,6 +13,8 @@ pub struct OutputInfo {
     pub name: Option<String>,
     pub transform: wl_output::Transform,
     pub scale: i32,
+    pub logical_width: Option<u32>,
+    pub logical_height: Option<u32>,
 }
 
 pub struct AppState {
@@ -24,6 +24,8 @@ pub struct AppState {
     pub output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub configured_count: usize,
     pub total_surfaces: usize,
+    pub layer_surface_configs: HashMap<u32, (u32, u32)>, 
+    pub surface_to_output: HashMap<u32, String>, 
 }
 
 impl AppState {
@@ -35,6 +37,8 @@ impl AppState {
             output_manager: None,
             configured_count: 0,
             total_surfaces: 0,
+            layer_surface_configs: HashMap::new(),
+            surface_to_output: HashMap::new(),
         }
     }
 }
@@ -68,6 +72,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                                 name: None,
                                 transform: wl_output::Transform::Normal,
                                 scale: 1,
+                                logical_width: None,
+                                logical_height: None,
                             },
                         );
                     }
@@ -164,27 +170,41 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for AppState {
                     output_info.name = Some(name);
                 }
             }
+            zxdg_output_v1::Event::LogicalSize { width, height } => {
+                if let Some(output_info) = state.outputs.get_mut(output_id) {
+                    output_info.logical_width = Some(width as u32);
+                    output_info.logical_height = Some(height as u32);
+                    debug!("Output {} logical size: {}x{}", output_info.name.as_deref().unwrap_or("unknown"), width, height);
+                }
+            }
             _ => {}
         }
     }
 }
 
-impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, Option<String>> for AppState {
     fn event(
         state: &mut Self,
         surface: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        _: &(),
+        output_name: &Option<String>,
         _: &Connection,
         _: &QueueHandle<AppState>,
     ) {
         match event {
             zwlr_layer_surface_v1::Event::Configure {
                 serial,
-                width: _,
-                height: _,
+                width,
+                height,
             } => {
                 surface.ack_configure(serial);
+                let surface_id = surface.id().protocol_id();
+                let output_name = output_name.clone().unwrap_or_else(|| format!("unknown-{}", surface_id));
+                
+                eprintln!("Layer surface {} (output {}) configured: {}x{}", surface_id, output_name, width, height);
+                
+                state.layer_surface_configs.insert(surface_id, (width, height));
+                state.surface_to_output.insert(surface_id, output_name);
                 state.configured_count += 1;
             }
             _ => {}
@@ -251,5 +271,3 @@ impl Dispatch<wl_region::WlRegion, ()> for AppState {
     ) {
     }
 }
-
-

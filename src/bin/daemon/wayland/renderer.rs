@@ -10,8 +10,6 @@ use crate::media::{
 };
 use crate::utils::{default_shader, vertex_shader};
 
-
-
 pub struct MediaRenderer {
     shader: u32,
     texture: Option<u32>,
@@ -97,31 +95,42 @@ impl MediaRenderer {
             media_type,
         })
     }
-    fn transform(&self, transform: wl_output::Transform, ow: i32, oh: i32) {
-        let sw = ow as f32;
-        let sh = oh as f32;
-        let iw = self.media_width as f32;
-        let ih = self.media_height as f32;
-        if iw <= 0.0 || ih <= 0.0 {
-            return; 
+
+    fn update_geometry(&self, output_width: i32, output_height: i32) {
+        let output_w = output_width as f32;
+        let output_h = output_height as f32;
+        let media_w = self.media_width as f32;
+        let media_h = self.media_height as f32;
+
+        if media_w <= 0.0 || media_h <= 0.0 {
+            let verts: [f32; 16] = [
+                -1.0, 1.0, 0.0, 1.0,
+                -1.0, -1.0, 0.0, 0.0,
+                1.0, -1.0, 1.0, 0.0,
+                1.0, 1.0, 1.0, 1.0,
+            ];
+            
+            unsafe {
+                gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    (verts.len() * std::mem::size_of::<f32>()) as isize,
+                    verts.as_ptr() as *const _,
+                    gl::STATIC_DRAW,
+                );
+            }
+            return;
         }
 
-        let scale_factor = f32::max(sw / iw, sh / ih);
+        let scale_factor = f32::max(output_w / media_w, output_h / media_h);
+        let scaled_w = (media_w * scale_factor) / output_w;
+        let scaled_h = (media_h * scale_factor) / output_h;
 
-        let ndc_w = (iw * scale_factor) / sw;
-        let ndc_h = (ih * scale_factor) / sh;
-
-        let (sx, sy) = match transform {
-            wl_output::Transform::_90
-            | wl_output::Transform::_270
-            | wl_output::Transform::Flipped90
-            | wl_output::Transform::Flipped270 => (ndc_h, ndc_w),
-            _ => (ndc_w, ndc_h),
-        };
-
-        // quad vertices
         let verts: [f32; 16] = [
-            -sx, sy, 0.0, 1.0, -sx, -sy, 0.0, 0.0, sx, -sy, 1.0, 0.0, sx, sy, 1.0, 1.0,
+            -scaled_w, scaled_h, 0.0, 1.0,
+            -scaled_w, -scaled_h, 0.0, 0.0,
+            scaled_w, -scaled_h, 1.0, 0.0,
+            scaled_w, scaled_h, 1.0, 1.0,
         ];
 
         unsafe {
@@ -134,6 +143,7 @@ impl MediaRenderer {
             );
         }
     }
+
     fn default_shader() -> Result<u32> {
         let vert_source = r#"
             #version 100
@@ -212,6 +222,7 @@ impl MediaRenderer {
 
         Ok(())
     }
+
     fn create_pure_shader(shader_path: &str) -> Result<u32> {
         let raw = load_shader(shader_path)?;
         let mut version_directive: Option<&str> = None;
@@ -294,6 +305,7 @@ impl MediaRenderer {
         let vert_source = vertex_shader();
         Self::compile(vert_source, &frag_source)
     }
+
     fn create_default_shader() -> Result<u32> {
         let vert_source = vertex_shader();
         let frag_source = default_shader();
@@ -376,7 +388,10 @@ impl MediaRenderer {
 
     fn setup_geometry() -> Result<(u32, u32)> {
         let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+            -1.0, 1.0, 0.0, 1.0,
+            -1.0, -1.0, 0.0, 0.0,
+            1.0, -1.0, 1.0, 0.0,
+            1.0, 1.0, 1.0, 1.0,
         ];
 
         let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
@@ -431,7 +446,7 @@ impl MediaRenderer {
         fifo_reader: &mut Option<FifoReader>,
         output_width: i32,
         output_height: i32,
-        transform: wl_output::Transform,
+        _transform: wl_output::Transform, 
     ) -> Result<()> {
         unsafe {
             gl::UseProgram(self.shader);
@@ -485,7 +500,8 @@ impl MediaRenderer {
                     }
                 }
             }
-            self.transform(transform, output_width, output_height);
+
+            self.update_geometry(output_width, output_height);
             gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
         }
         Ok(())

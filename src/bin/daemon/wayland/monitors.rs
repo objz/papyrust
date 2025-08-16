@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use khronos_egl as egl;
 use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Proxy, QueueHandle};
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::media::MediaType;
 use crate::wayland::renderer::MediaRenderer;
@@ -13,11 +13,14 @@ pub struct MonitorState {
     pub egl_surface: egl::Surface,
     pub egl_context: egl::Context,
     pub renderer: MediaRenderer,
-    pub output_info: OutputInfo,
-    // Keep the native window alive to prevent it from being dropped
-    // This is necessary for the EGL surface to remain valid
-    // EGL is weird
-    pub _egl_window: wayland_egl::WlEglSurface,
+    pub _output_info: OutputInfo,
+    pub egl_window: wayland_egl::WlEglSurface,
+    pub current_width: u32,
+    pub current_height: u32,
+    pub _layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    pub layer_surface_id: u32,
+    pub configured: bool,
+    pub output_name: String,
 }
 
 pub fn create_monitor_state(
@@ -32,13 +35,7 @@ pub fn create_monitor_state(
 ) -> Result<MonitorState> {
     let surface = compositor.create_surface(qh, ());
     let input_region = compositor.create_region(qh, ());
-    let render_region = compositor.create_region(qh, ());
-    render_region.add(0, 0, output_info.width, output_info.height);
-    surface.set_opaque_region(Some(&render_region));
     surface.set_input_region(Some(&input_region));
-
-    surface.set_buffer_transform(output_info.transform);
-    surface.set_buffer_scale(output_info.scale);
 
     let layer = match layer_name {
         Some("top") => zwlr_layer_shell_v1::Layer::Top,
@@ -54,11 +51,28 @@ pub fn create_monitor_state(
         layer,
         "papyrust-daemon".to_string(),
         qh,
-        (),
+        output_info.name.clone(), 
+    );
+
+    let layer_surface_id = layer_surface.id().protocol_id();
+    let output_name = output_info
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
+
+    eprintln!(
+        "Creating layer surface {} for output {}",
+        layer_surface_id, output_name
     );
 
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_size(output_info.width as u32, output_info.height as u32);
+    layer_surface.set_anchor(
+        zwlr_layer_surface_v1::Anchor::Top
+            | zwlr_layer_surface_v1::Anchor::Left
+            | zwlr_layer_surface_v1::Anchor::Right
+            | zwlr_layer_surface_v1::Anchor::Bottom,
+    );
+
     surface.commit();
 
     let display_ptr = conn.display().id().as_ptr();
@@ -99,9 +113,11 @@ pub fn create_monitor_state(
     ];
     let context = egl_instance.create_context(egl_display, *config, None, &context_attribs)?;
 
-    let egl_window =
-        wayland_egl::WlEglSurface::new(surface.id(), output_info.width, output_info.height)
-            .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
+    let initial_width = 100;
+    let initial_height = 100;
+
+    let egl_window = wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
+        .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
 
     let egl_surface = unsafe {
         egl_instance.create_window_surface(
@@ -126,7 +142,34 @@ pub fn create_monitor_state(
         egl_surface,
         egl_context: context,
         renderer,
-        output_info: output_info.clone(),
-        _egl_window: egl_window,
+        _output_info: output_info.clone(),
+        egl_window,
+        current_width: initial_width as u32,
+        current_height: initial_height as u32,
+        _layer_surface: layer_surface,
+        layer_surface_id,
+        configured: false,
+        output_name,
     })
+}
+
+impl MonitorState {
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        if self.current_width != width || self.current_height != height {
+            eprintln!(
+                "Resizing monitor {} (surface {}) from {}x{} to {}x{}",
+                self.output_name,
+                self.layer_surface_id,
+                self.current_width,
+                self.current_height,
+                width,
+                height
+            );
+            self.egl_window.resize(width as i32, height as i32, 0, 0);
+            self.current_width = width;
+            self.current_height = height;
+            self.configured = true;
+        }
+        Ok(())
+    }
 }

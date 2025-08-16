@@ -8,7 +8,7 @@ use log::info;
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::mpsc::Receiver;
-use wayland_client::Connection;
+use wayland_client::{Connection, protocol::wl_output};
 
 use crate::ipc::MediaChange;
 use crate::media::MediaType;
@@ -74,6 +74,18 @@ pub fn init(
     }
     event_queue.roundtrip(&mut app_state)?;
 
+    for ms in monitor_states.values_mut() {
+        if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id) {
+            eprintln!(
+                "Applying initial config to {}: {}x{}",
+                ms.output_name, width, height
+            );
+            ms.resize(*width, *height)?;
+        } else {
+            eprintln!("No configuration found for monitor {}", ms.output_name);
+        }
+    }
+
     for ms in monitor_states.values() {
         egl_instance.swap_interval(ms.egl_display, if fps == 0 { 1 } else { 0 })?;
     }
@@ -89,6 +101,23 @@ pub fn init(
 
     loop {
         let frame_start = utils::get_time_millis();
+
+        event_queue.dispatch_pending(&mut app_state)?;
+
+        for ms in monitor_states.values_mut() {
+            if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id)
+            {
+                if !ms.configured || ms.current_width != *width || ms.current_height != *height {
+                    if let Some(config_output) =
+                        app_state.surface_to_output.get(&ms.layer_surface_id)
+                    {
+                        if config_output == &ms.output_name {
+                            ms.resize(*width, *height)?;
+                        }
+                    }
+                }
+            }
+        }
 
         if let Ok(media_change) = ipc_receiver.try_recv() {
             if let MediaType::Video { path, .. } = &media_change.media_type {
@@ -153,7 +182,6 @@ pub fn init(
             }
         }
 
-        event_queue.dispatch_pending(&mut app_state)?;
         for ms in monitor_states.values_mut() {
             egl_instance.make_current(
                 ms.egl_display,
@@ -163,9 +191,9 @@ pub fn init(
             )?;
             ms.renderer.draw(
                 &mut fifo_reader,
-                ms.output_info.width,
-                ms.output_info.height,
-                ms.output_info.transform,
+                ms.current_width as i32,
+                ms.current_height as i32,
+                wl_output::Transform::Normal, 
             )?;
             egl_instance.swap_buffers(ms.egl_display, ms.egl_surface)?;
         }
