@@ -17,7 +17,6 @@ mod monitors;
 mod renderer;
 mod state;
 
-
 pub fn init(
     media_type: MediaType,
     fps: u16,
@@ -28,7 +27,9 @@ pub fn init(
 ) -> Result<()> {
     tracing::info!(
         event = "wayland_init",
-        fps, layer = layer_name, fifo = fifo_path,
+        fps,
+        layer = layer_name,
+        fifo = fifo_path,
         mute,
         "Initializing Wayland stack"
     );
@@ -138,6 +139,7 @@ pub fn init(
     let mut last_audio_path: Option<String> = None;
     let mut last_audio_child: Option<Child> = None;
     let mut frame_count = 0u64;
+    let mut last_fps_check = utils::get_time_millis();
 
     let target_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 };
     let mut adaptive_frame_time = target_frame_time;
@@ -148,9 +150,11 @@ pub fn init(
         // Process pending events & configs
         event_queue.dispatch_pending(&mut app_state)?;
         for ms in monitor_states.values_mut() {
-            if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id) {
+            if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id)
+            {
                 if !ms.configured || ms.current_width != *width || ms.current_height != *height {
-                    if let Some(config_output) = app_state.surface_to_output.get(&ms.layer_surface_id)
+                    if let Some(config_output) =
+                        app_state.surface_to_output.get(&ms.layer_surface_id)
                     {
                         if config_output == &ms.output_name {
                             ms.resize(*width, *height)?;
@@ -172,7 +176,11 @@ pub fn init(
                         egl_instance.swap_interval(ms.egl_display, if fps == 0 { 1 } else { 0 })?;
                     }
                 }
-                tracing::info!(event = "swap_interval_reconfigured", has_video, "Reconfigured swap intervals due to media type change");
+                tracing::info!(
+                    event = "swap_interval_reconfigured",
+                    has_video,
+                    "Reconfigured swap intervals due to media type change"
+                );
             }
 
             if let MediaType::Video { path, .. } = &media_change.media_type {
@@ -189,7 +197,16 @@ pub fn init(
                 if !effective_mute && last_audio_path.as_deref() != Some(path.as_str()) {
                     let audio_path = path.clone();
                     match std::process::Command::new("ffplay")
-                        .args(&["-nodisp","-autoexit","-hide_banner","-loglevel","error","-loop","0",&audio_path])
+                        .args(&[
+                            "-nodisp",
+                            "-autoexit",
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-loop",
+                            "0",
+                            &audio_path,
+                        ])
                         .spawn()
                     {
                         Ok(child) => {
@@ -208,7 +225,10 @@ pub fn init(
                 if let Some(mut child) = last_audio_child.take() {
                     let _ = child.kill();
                     let _ = child.wait();
-                    tracing::debug!(event = "audio_player_stopped", "Stopped ffplay due to non-video media");
+                    tracing::debug!(
+                        event = "audio_player_stopped",
+                        "Stopped ffplay due to non-video media"
+                    );
                 }
                 last_audio_path = None;
             }
@@ -233,7 +253,8 @@ pub fn init(
                         Some(ms.egl_surface),
                         Some(ms.egl_context),
                     )?;
-                    ms.renderer.update_media(media_change.media_type.clone(), fps)?;
+                    ms.renderer
+                        .update_media(media_change.media_type.clone(), fps)?;
                 }
             }
         }
@@ -274,16 +295,28 @@ pub fn init(
                 utils::sleep_millis(target_frame_time - elapsed);
             }
         } else {
-            adaptive_frame_time = if any_video_updated { target_frame_time } else { target_frame_time * 2 };
+            adaptive_frame_time = if any_video_updated {
+                target_frame_time
+            } else {
+                target_frame_time * 2
+            };
             let elapsed = utils::get_time_millis() - frame_start;
             if elapsed < adaptive_frame_time {
                 utils::sleep_millis(adaptive_frame_time - elapsed);
             }
         }
 
-        if frame_count % 600 == 0 {
-            tracing::debug!(event = "render_heartbeat", frames = frame_count, "Render loop heartbeat");
+        if frame_count % 300 == 0 {
+
+            let now = utils::get_time_millis();
+            let _fps_actual = 300000 / (now - last_fps_check + 1);
+            last_fps_check = now;
+
+            tracing::debug!(
+                event = "render_heartbeat",
+                frames = frame_count,
+                "Render loop heartbeat"
+            );
         }
     }
 }
-

@@ -400,7 +400,7 @@ impl VideoDecoder {
     }
 
     fn restart_video(&mut self) -> Result<()> {
-        tracing::info!(event = "video_restart", path = %self.video_path, "Restarting video playback");
+        tracing::debug!(event = "video_restart", path = %self.video_path, "Restarting video playback");
 
         self.current_frame = None;
         self.next_frame = None;
