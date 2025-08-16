@@ -1,14 +1,11 @@
 use crate::utils;
 use crate::wayland::fifo::FifoReader;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::ffi::{CStr, CString};
-use wayland_client::protocol::{wl_output};
+use wayland_client::protocol::wl_output;
 
-use tracing::info;
 use crate::gl_bindings as gl;
-use crate::media::{
-    load_shader, ImageLoader, MediaType, VideoDecoder,
-};
+use crate::media::{ImageLoader, MediaType, VideoDecoder, load_shader};
 use crate::utils::{default_shader, vertex_shader};
 
 pub struct MediaRenderer {
@@ -25,7 +22,12 @@ pub struct MediaRenderer {
 
 impl MediaRenderer {
     pub fn new(media_type: MediaType, fps: u16) -> Result<Self> {
-        info!("Creating MediaRenderer with type: {:?}, fps: {}", media_type, fps);
+        tracing::info!(
+            event = "renderer_create",
+            ?media_type,
+            fps,
+            "Creating MediaRenderer"
+        );
 
         let start_time = utils::get_time_millis();
 
@@ -90,6 +92,15 @@ impl MediaRenderer {
 
         let (vbo, _) = Self::setup_geometry()?;
 
+        tracing::debug!(
+            event = "renderer_ready",
+            media_width,
+            media_height,
+            has_texture = media_texture.is_some(),
+            has_decoder = video_decoder.is_some(),
+            "Renderer initialized"
+        );
+
         Ok(Self {
             shader: shader_program,
             texture: media_texture,
@@ -119,12 +130,9 @@ impl MediaRenderer {
 
         if media_w <= 0.0 || media_h <= 0.0 {
             let verts: [f32; 16] = [
-                -1.0, 1.0, 0.0, 0.0,  
-                -1.0, -1.0, 0.0, 1.0, 
-                1.0, -1.0, 1.0, 1.0,  
-                1.0, 1.0, 1.0, 0.0,   
+                -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
             ];
-            
+
             unsafe {
                 gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
                 gl::BufferData(
@@ -142,10 +150,8 @@ impl MediaRenderer {
         let scaled_h = (media_h * scale_factor) / output_h;
 
         let verts: [f32; 16] = [
-            -scaled_w, scaled_h, 0.0, 0.0,  
-            -scaled_w, -scaled_h, 0.0, 1.0, 
-            scaled_w, -scaled_h, 1.0, 1.0,  
-            scaled_w, scaled_h, 1.0, 0.0,   
+            -scaled_w, scaled_h, 0.0, 0.0, -scaled_w, -scaled_h, 0.0, 1.0, scaled_w, -scaled_h,
+            1.0, 1.0, scaled_w, scaled_h, 1.0, 0.0,
         ];
 
         unsafe {
@@ -184,12 +190,18 @@ impl MediaRenderer {
     }
 
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
-        info!("Updating media to: {:?}, fps: {}", new_media_type, fps);
+        tracing::info!(
+            event = "renderer_media_update",
+            ?new_media_type,
+            fps,
+            "Updating renderer media"
+        );
 
         if let Some(texture) = self.texture {
             unsafe {
                 gl::DeleteTextures(1, &texture);
             }
+            tracing::debug!(event = "texture_deleted", "Previous texture deleted");
         }
         self.decoder = None;
 
@@ -240,6 +252,13 @@ impl MediaRenderer {
         self.media_type = new_media_type;
         self.fps = fps;
 
+        tracing::debug!(
+            event = "renderer_media_ready",
+            media_width = self.media_width,
+            media_height = self.media_height,
+            has_decoder = self.decoder.is_some(),
+            "Media update complete"
+        );
         Ok(())
     }
 
@@ -408,10 +427,7 @@ impl MediaRenderer {
 
     fn setup_geometry() -> Result<(u32, u32)> {
         let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 0.0,  
-            -1.0, -1.0, 0.0, 1.0, 
-            1.0, -1.0, 1.0, 1.0,  
-            1.0, 1.0, 1.0, 0.0,   
+            -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
         ];
 
         let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
@@ -466,7 +482,7 @@ impl MediaRenderer {
         fifo_reader: &mut Option<FifoReader>,
         output_width: i32,
         output_height: i32,
-        _transform: wl_output::Transform, 
+        _transform: wl_output::Transform,
     ) -> Result<()> {
         unsafe {
             gl::UseProgram(self.shader);
@@ -474,11 +490,10 @@ impl MediaRenderer {
             gl::Viewport(0, 0, output_width, output_height);
 
             if let Some(ref mut decoder) = self.decoder {
-                decoder.update_frame()?;
+                let _ = decoder.update_frame()?;
             }
 
-            let time_loc =
-                gl::GetUniformLocation(self.shader, b"time\0".as_ptr() as *const i8);
+            let time_loc = gl::GetUniformLocation(self.shader, b"time\0".as_ptr() as *const i8);
             if time_loc != -1 {
                 let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
                 gl::Uniform1f(time_loc, time);
@@ -502,8 +517,7 @@ impl MediaRenderer {
             }
 
             if let Some(reader) = fifo_reader {
-                let fifo_loc =
-                    gl::GetUniformLocation(self.shader, b"fifo\0".as_ptr() as *const i8);
+                let fifo_loc = gl::GetUniformLocation(self.shader, b"fifo\0".as_ptr() as *const i8);
                 if fifo_loc != -1 {
                     if let Ok(Some(sample)) = reader.read_sample() {
                         let left_val = if !sample.left.is_empty() {

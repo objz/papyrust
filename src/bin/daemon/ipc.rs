@@ -1,11 +1,10 @@
-use anyhow::{anyhow, Result};
+use crate::media::MediaType;
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc::Sender;
 use std::thread;
-use tracing::{info, warn};
-use crate::media::MediaType;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcCommand {
@@ -48,19 +47,23 @@ pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     let listener =
         UnixListener::bind(socket_path).map_err(|e| anyhow!("Failed to bind IPC socket: {}", e))?;
 
-    info!("IPC server listening on {}", socket_path);
-
+    tracing::info!(
+        event = "ipc_listen",
+        path = socket_path,
+        "IPC server listening"
+    );
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let tx_clone = tx.clone();
                 thread::spawn(move || {
                     if let Err(e) = handle_client(stream, tx_clone) {
-                        warn!("Client error: {e}");                    }
+                        tracing::warn!(event = "ipc_client_error", error = %e, "Client handling error");
+                    }
                 });
             }
             Err(e) => {
-                warn!("Connection failed: {}", e);
+                tracing::warn!(event = "ipc_accept_error", error = %e, "IPC accept failed");
             }
         }
     }
@@ -69,13 +72,34 @@ pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
 }
 
 fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
+    let peer = stream.peer_addr().ok();
+    tracing::debug!(event = "ipc_client_begin", ?peer, "Client connected");
+
     let mut reader = BufReader::new(&stream);
     let mut writer = stream.try_clone()?;
     let mut line = String::new();
 
     while reader.read_line(&mut line)? > 0 {
-        let command: IpcCommand = serde_json::from_str(&line.trim())
-            .map_err(|e| anyhow!("Invalid JSON command: {}", e))?;
+        let trimmed = line.trim();
+        let command: IpcCommand =
+            serde_json::from_str(trimmed).map_err(|e| anyhow!("Invalid JSON command: {}", e))?;
+
+        match &command {
+            IpcCommand::SetImage { monitor, path, .. } => {
+                tracing::info!(event = "ipc_command", cmd = "SetImage", monitor = monitor.as_deref(), path = %path, "Applying image");
+            }
+            IpcCommand::SetVideo {
+                monitor,
+                path,
+                mute,
+                ..
+            } => {
+                tracing::info!(event = "ipc_command", cmd = "SetVideo", monitor = monitor.as_deref(), path = %path, mute = *mute, "Applying video");
+            }
+            IpcCommand::SetShader { monitor, path } => {
+                tracing::info!(event = "ipc_command", cmd = "SetShader", monitor = monitor.as_deref(), path = %path, "Applying shader");
+            }
+        }
 
         let response = match command {
             IpcCommand::SetImage {
@@ -132,8 +156,10 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
 
+        tracing::debug!(event = "ipc_reply", response = %response_json, "Sent reply to client");
         line.clear();
     }
 
+    tracing::debug!(event = "ipc_client_end", "Client disconnected");
     Ok(())
 }

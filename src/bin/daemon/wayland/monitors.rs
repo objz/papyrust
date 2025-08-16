@@ -3,7 +3,6 @@ use khronos_egl as egl;
 use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
-use tracing::info;
 
 use crate::media::MediaType;
 use crate::wayland::renderer::MediaRenderer;
@@ -59,7 +58,13 @@ pub fn create_monitor_state(
     let layer_surface_id = layer_surface.id().protocol_id();
     let output_name = output_info.name.clone().unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
 
-    info!("Creating layer surface {} for output {}", layer_surface_id, output_name);
+    tracing::info!(
+        event = "layer_surface_create",
+        output = %output_name,
+        surface_id = layer_surface_id,
+        layer = ?layer_name.unwrap_or("background"),
+        "Created layer surface"
+    );
 
     layer_surface.set_exclusive_zone(-1);
     layer_surface.set_anchor(
@@ -132,6 +137,14 @@ pub fn create_monitor_state(
         Some(context),
     )?;
 
+    tracing::debug!(
+        event = "egl_ready",
+        output = %output_name,
+        width = initial_width,
+        height = initial_height,
+        "EGL surface/context ready"
+    );
+
     let renderer = MediaRenderer::new(media_type, fps)?;
 
     Ok(MonitorState {
@@ -151,16 +164,33 @@ pub fn create_monitor_state(
 }
 
 impl MonitorState {
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-        if self.current_width != width || self.current_height != height {
-            info!("Resizing monitor {} (surface {}) from {}x{} to {}x{}", 
-                     self.output_name, self.layer_surface_id,
-                     self.current_width, self.current_height, width, height);
-            self.egl_window.resize(width as i32, height as i32, 0, 0);
-            self.current_width = width;
-            self.current_height = height;
-            self.configured = true;
-        }
-        Ok(())
+
+pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+    if self.current_width != width || self.current_height != height {
+        tracing::info!(
+            event = "monitor_resize",
+            output = %self.output_name,
+            surface_id = self.layer_surface_id,
+            from_width = self.current_width,
+            from_height = self.current_height,
+            to_width = width,
+            to_height = height,
+            "Applying monitor resize"
+        );
+        self.egl_window.resize(width as i32, height as i32, 0, 0);
+        self.current_width = width;
+        self.current_height = height;
+        self.configured = true;
+    } else {
+        tracing::debug!(
+            event = "monitor_resize_skipped",
+            output = %self.output_name,
+            width,
+            height,
+            "Resize skipped (dimensions unchanged)"
+        );
     }
+    Ok(())
+}
+
 }

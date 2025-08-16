@@ -2,8 +2,6 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use std::{process, sync::mpsc, thread};
 
-// NEW: tracing imports
-use tracing::info;
 use tracing_log::LogTracer;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -58,8 +56,9 @@ struct Args {
     mute: bool,
 }
 
+
 fn main() -> Result<()> {
-    let _ = LogTracer::init(); 
+    let _ = LogTracer::init();
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("papyrust=info,wayland_client=warn"));
     let _ = fmt()
@@ -69,6 +68,16 @@ fn main() -> Result<()> {
         .try_init();
 
     let args = Args::parse();
+
+    tracing::info!(
+        event = "daemon_start",
+        fork = args.fork,
+        fps = args.fps,
+        layer = args.layer.as_ref().map(|l| l.to_string()),
+        fifo = args.fifo.as_deref(),
+        mute = args.mute,
+        "Starting Papyrust daemon"
+    );
 
     if args.fork {
         unsafe {
@@ -80,6 +89,7 @@ fn main() -> Result<()> {
                 libc::close(0);
                 libc::close(1);
                 libc::close(2);
+                tracing::debug!(event = "daemon_forked", "Detached from controlling terminal");
             }
         }
     }
@@ -89,13 +99,11 @@ fn main() -> Result<()> {
     let ipc_tx = tx.clone();
     thread::spawn(move || {
         if let Err(e) = ipc::start_server(ipc_tx) {
-            tracing::error!("IPC server error: {e}");
+            tracing::error!(event = "ipc_server_error", error = %e, "IPC server error");
         }
     });
 
     let init_media = media::MediaType::Shader("default".to_string());
-
-    info!("Starting Papyrust daemon");
 
     wayland::init(
         init_media,
@@ -106,5 +114,7 @@ fn main() -> Result<()> {
         args.mute,
     )?;
 
+    tracing::info!(event = "daemon_exit", "Papyrust daemon exited");
     Ok(())
 }
+

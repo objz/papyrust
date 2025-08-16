@@ -38,7 +38,10 @@ pub fn set_shader(monitor: String, path: String) -> Result<()> {
     send_command(cmd)
 }
 
+
 fn send_command(cmd: serde_json::Value) -> Result<()> {
+    tracing::debug!(event = "ui_send_cmd", cmd = %cmd, "Sending IPC command");
+
     let mut stream = UnixStream::connect(SOCKET_PATH)?;
     writeln!(stream, "{}", cmd)?;
     stream.flush()?;
@@ -48,5 +51,7 @@ fn send_command(cmd: serde_json::Value) -> Result<()> {
     reader.read_line(&mut response)?;
 
     info!("{}", response.trim());
+    tracing::debug!(event = "ui_recv_reply", reply = %response.trim(), "Received IPC reply");
     Ok(())
 }
+
