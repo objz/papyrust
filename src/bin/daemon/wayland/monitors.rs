@@ -1,16 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use khronos_egl as egl;
-use wayland_client::protocol::{wl_compositor};
+use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Proxy, QueueHandle};
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1};
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
 
-use crate::media::{
-    MediaType
-};
+use crate::media::MediaType;
 use crate::wayland::renderer::MediaRenderer;
 use crate::wayland::state::{AppState, OutputInfo};
-
-
 
 pub struct MonitorState {
     pub egl_display: egl::Display,
@@ -18,8 +14,11 @@ pub struct MonitorState {
     pub egl_context: egl::Context,
     pub renderer: MediaRenderer,
     pub output_info: OutputInfo,
+    // Keep the native window alive to prevent it from being dropped
+    // This is necessary for the EGL surface to remain valid
+    // EGL is weird
+    pub _egl_window: wayland_egl::WlEglSurface,
 }
-
 
 pub fn create_monitor_state(
     output_info: &OutputInfo,
@@ -32,12 +31,9 @@ pub fn create_monitor_state(
     qh: &QueueHandle<AppState>,
 ) -> Result<MonitorState> {
     let surface = compositor.create_surface(qh, ());
-
     let input_region = compositor.create_region(qh, ());
     let render_region = compositor.create_region(qh, ());
-
     render_region.add(0, 0, output_info.width, output_info.height);
-
     surface.set_opaque_region(Some(&render_region));
     surface.set_input_region(Some(&input_region));
 
@@ -62,15 +58,15 @@ pub fn create_monitor_state(
     );
 
     layer_surface.set_exclusive_zone(-1);
-
     layer_surface.set_size(output_info.width as u32, output_info.height as u32);
     surface.commit();
 
     let display_ptr = conn.display().id().as_ptr();
     let egl_display = unsafe { egl_instance.get_display(display_ptr as *mut _) }
         .ok_or_else(|| anyhow!("Failed to get EGL display for Wayland connection"))?;
-
     let _version = egl_instance.initialize(egl_display)?;
+
+    egl_instance.bind_api(egl::OPENGL_ES_API)?;
 
     let config_attribs = [
         egl::SURFACE_TYPE,
@@ -82,6 +78,8 @@ pub fn create_monitor_state(
         egl::GREEN_SIZE,
         8,
         egl::BLUE_SIZE,
+        8,
+        egl::ALPHA_SIZE,
         8,
         egl::NONE,
     ];
@@ -99,17 +97,17 @@ pub fn create_monitor_state(
         0,
         egl::NONE,
     ];
-
     let context = egl_instance.create_context(egl_display, *config, None, &context_attribs)?;
 
-    let egl_surface_wrapper =
-        wayland_egl::WlEglSurface::new(surface.id(), output_info.width, output_info.height)?;
+    let egl_window =
+        wayland_egl::WlEglSurface::new(surface.id(), output_info.width, output_info.height)
+            .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
 
     let egl_surface = unsafe {
         egl_instance.create_window_surface(
             egl_display,
             *config,
-            egl_surface_wrapper.ptr() as *mut _,
+            egl_window.ptr() as *mut _,
             Some(&[egl::NONE]),
         )?
     };
@@ -129,5 +127,6 @@ pub fn create_monitor_state(
         egl_context: context,
         renderer,
         output_info: output_info.clone(),
+        _egl_window: egl_window,
     })
 }

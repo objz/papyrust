@@ -37,6 +37,11 @@ gl_generator = "0.14"
 [profile.release]
 debug = true
 
+[profile.dev]
+debug = true
+opt-level = 0
+overflow-checks = true
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "allow"
 

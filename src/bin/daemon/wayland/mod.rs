@@ -2,24 +2,21 @@ use crate::utils;
 use crate::wayland::fifo::FifoReader;
 use crate::wayland::monitors::create_monitor_state;
 use crate::wayland::state::AppState;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use khronos_egl as egl;
-use log::{info};
-use wayland_client::Connection;
+use log::info;
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::mpsc::Receiver;
+use wayland_client::Connection;
 
 use crate::ipc::MediaChange;
-use crate::media::{
-    MediaType
-};
+use crate::media::MediaType;
 
-
-mod state;
 mod fifo;
-mod renderer;
 mod monitors;
+mod renderer;
+mod state;
 
 pub fn init(
     media_type: MediaType,
@@ -33,6 +30,7 @@ pub fn init(
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
     let mut app_state = AppState::new();
+    let _registry = conn.display().get_registry(&qh, ());
     event_queue.roundtrip(&mut app_state)?;
 
     if let Some(ref om) = app_state.output_manager {
