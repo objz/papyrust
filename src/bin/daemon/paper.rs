@@ -8,6 +8,7 @@ use std::process::Child;
 use std::sync::mpsc::Receiver;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_region, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_client::backend::ObjectId;
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
@@ -53,6 +54,7 @@ struct AppState {
     output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     configured_count: usize,
     total_surfaces: usize,
+    pending_configures: HashMap<ObjectId, (u32, u32)>,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             output_manager: None,
             configured_count: 0,
             total_surfaces: 0,
+            pending_configures: HashMap::new(),
         }
     }
 }
@@ -224,13 +227,7 @@ impl MediaRenderer {
         let ndc_w = (iw * scale_factor) / sw;
         let ndc_h = (ih * scale_factor) / sh;
 
-        let (sx, sy) = match transform {
-            wl_output::Transform::_90
-            | wl_output::Transform::_270
-            | wl_output::Transform::Flipped90
-            | wl_output::Transform::Flipped270 => (ndc_h, ndc_w),
-            _ => (ndc_w, ndc_h),
-        };
+        let (sx, sy) = (ndc_w, ndc_h);
 
         // quad vertices
         let verts: [f32; 16] = [
@@ -612,8 +609,8 @@ struct MonitorState {
     renderer: MediaRenderer,
     output_info: OutputInfo,
     _surface: wl_surface::WlSurface,
-    _layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-    _egl_surface_wrapper: wayland_egl::WlEglSurface,
+    layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    egl_surface_wrapper: wayland_egl::WlEglSurface,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
@@ -759,10 +756,11 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
         match event {
             zwlr_layer_surface_v1::Event::Configure {
                 serial,
-                width: _,
-                height: _,
+                width,
+                height,
             } => {
                 surface.ack_configure(serial);
+                state.pending_configures.insert(surface.id(), (width, height));
                 state.configured_count += 1;
             }
             _ => {}
@@ -848,7 +846,7 @@ fn create_monitor_state(
     surface.set_opaque_region(Some(&render_region));
     surface.set_input_region(Some(&input_region));
 
-    surface.set_buffer_transform(output_info.transform);
+    surface.set_buffer_transform(wl_output::Transform::Normal);
     surface.set_buffer_scale(output_info.scale);
 
     let layer = match layer_name {
@@ -869,7 +867,8 @@ fn create_monitor_state(
     );
 
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_size(output_info.width as u32, output_info.height as u32);
+    layer_surface.set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Left | zwlr_layer_surface_v1::Anchor::Right);
+    layer_surface.set_size(0, 0);
     surface.commit();
 
     let display_ptr = conn.display().id().as_ptr();
@@ -936,8 +935,8 @@ fn create_monitor_state(
         renderer,
         output_info: output_info.clone(),
         _surface: surface,
-        _layer_surface: layer_surface,
-        _egl_surface_wrapper: egl_surface_wrapper,
+        layer_surface,
+        egl_surface_wrapper: egl_surface_wrapper,
     })
 }
 
@@ -1079,6 +1078,18 @@ pub fn init(
         }
 
         event_queue.dispatch_pending(&mut app_state)?;
+        
+        // Handle pending configures and resize EGL windows
+        for ms in monitor_states.values_mut() {
+            if let Some((w, h)) = app_state.pending_configures.remove(&ms.layer_surface.id()) {
+                let new_w = if w == 0 { ms.output_info.width as u32 } else { w };
+                let new_h = if h == 0 { ms.output_info.height as u32 } else { h };
+                ms.egl_surface_wrapper.resize(new_w as i32, new_h as i32, 0, 0);
+                ms.output_info.width = new_w as i32;
+                ms.output_info.height = new_h as i32;
+            }
+        }
+        
         for ms in monitor_states.values_mut() {
             egl_instance.make_current(
                 ms.egl_display,
