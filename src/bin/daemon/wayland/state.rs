@@ -24,8 +24,8 @@ pub struct AppState {
     pub output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub configured_count: usize,
     pub total_surfaces: usize,
-    pub layer_surface_configs: HashMap<u32, (u32, u32)>, 
-    pub surface_to_output: HashMap<u32, String>, 
+    pub layer_surface_configs: HashMap<u32, (u32, u32)>,
+    pub surface_to_output: HashMap<u32, String>,
 }
 
 impl AppState {

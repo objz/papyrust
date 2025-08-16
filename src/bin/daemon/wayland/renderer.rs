@@ -1,11 +1,13 @@
 use crate::utils;
 use crate::wayland::fifo::FifoReader;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::ffi::{CStr, CString};
-use wayland_client::protocol::wl_output;
+use wayland_client::protocol::{wl_output};
 
 use crate::gl_bindings as gl;
-use crate::media::{ImageLoader, MediaType, VideoDecoder, load_shader};
+use crate::media::{
+    load_shader, ImageLoader, MediaType, VideoDecoder,
+};
 use crate::utils::{default_shader, vertex_shader};
 
 pub struct MediaRenderer {
@@ -94,6 +96,14 @@ impl MediaRenderer {
         })
     }
 
+    pub fn has_new_frame(&self) -> bool {
+        if let Some(ref decoder) = self.decoder {
+            decoder.has_new_frame()
+        } else {
+            false
+        }
+    }
+
     fn update_geometry(&self, output_width: i32, output_height: i32) {
         let output_w = output_width as f32;
         let output_h = output_height as f32;
@@ -102,9 +112,12 @@ impl MediaRenderer {
 
         if media_w <= 0.0 || media_h <= 0.0 {
             let verts: [f32; 16] = [
-                -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+                -1.0, 1.0, 0.0, 0.0,  // Flipped Y texture coordinate
+                -1.0, -1.0, 0.0, 1.0, // Flipped Y texture coordinate
+                1.0, -1.0, 1.0, 1.0,  // Flipped Y texture coordinate
+                1.0, 1.0, 1.0, 0.0,   // Flipped Y texture coordinate
             ];
-
+            
             unsafe {
                 gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
                 gl::BufferData(
@@ -122,8 +135,10 @@ impl MediaRenderer {
         let scaled_h = (media_h * scale_factor) / output_h;
 
         let verts: [f32; 16] = [
-            -scaled_w, scaled_h, 0.0, 0.0, -scaled_w, -scaled_h, 0.0, 1.0, scaled_w, -scaled_h,
-            1.0, 1.0, scaled_w, scaled_h, 1.0, 0.0,
+            -scaled_w, scaled_h, 0.0, 0.0,  // Flipped Y texture coordinate
+            -scaled_w, -scaled_h, 0.0, 1.0, // Flipped Y texture coordinate
+            scaled_w, -scaled_h, 1.0, 1.0,  // Flipped Y texture coordinate
+            scaled_w, scaled_h, 1.0, 0.0,   // Flipped Y texture coordinate
         ];
 
         unsafe {
@@ -381,7 +396,10 @@ impl MediaRenderer {
 
     fn setup_geometry() -> Result<(u32, u32)> {
         let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+            -1.0, 1.0, 0.0, 0.0,  // Flipped Y texture coordinate
+            -1.0, -1.0, 0.0, 1.0, // Flipped Y texture coordinate
+            1.0, -1.0, 1.0, 1.0,  // Flipped Y texture coordinate
+            1.0, 1.0, 1.0, 0.0,   // Flipped Y texture coordinate
         ];
 
         let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
@@ -436,7 +454,7 @@ impl MediaRenderer {
         fifo_reader: &mut Option<FifoReader>,
         output_width: i32,
         output_height: i32,
-        _transform: wl_output::Transform,
+        _transform: wl_output::Transform, 
     ) -> Result<()> {
         unsafe {
             gl::UseProgram(self.shader);
@@ -447,7 +465,8 @@ impl MediaRenderer {
                 decoder.update_frame()?;
             }
 
-            let time_loc = gl::GetUniformLocation(self.shader, b"time\0".as_ptr() as *const i8);
+            let time_loc =
+                gl::GetUniformLocation(self.shader, b"time\0".as_ptr() as *const i8);
             if time_loc != -1 {
                 let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
                 gl::Uniform1f(time_loc, time);
@@ -471,7 +490,8 @@ impl MediaRenderer {
             }
 
             if let Some(reader) = fifo_reader {
-                let fifo_loc = gl::GetUniformLocation(self.shader, b"fifo\0".as_ptr() as *const i8);
+                let fifo_loc =
+                    gl::GetUniformLocation(self.shader, b"fifo\0".as_ptr() as *const i8);
                 if fifo_loc != -1 {
                     if let Ok(Some(sample)) = reader.read_sample() {
                         let left_val = if !sample.left.is_empty() {

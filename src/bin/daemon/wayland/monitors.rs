@@ -13,11 +13,11 @@ pub struct MonitorState {
     pub egl_surface: egl::Surface,
     pub egl_context: egl::Context,
     pub renderer: MediaRenderer,
-    pub _output_info: OutputInfo,
+    pub output_info: OutputInfo,
     pub egl_window: wayland_egl::WlEglSurface,
     pub current_width: u32,
     pub current_height: u32,
-    pub _layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     pub layer_surface_id: u32,
     pub configured: bool,
     pub output_name: String,
@@ -51,19 +51,13 @@ pub fn create_monitor_state(
         layer,
         "papyrust-daemon".to_string(),
         qh,
-        output_info.name.clone(), 
+        output_info.name.clone(),
     );
 
     let layer_surface_id = layer_surface.id().protocol_id();
-    let output_name = output_info
-        .name
-        .clone()
-        .unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
+    let output_name = output_info.name.clone().unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
 
-    eprintln!(
-        "Creating layer surface {} for output {}",
-        layer_surface_id, output_name
-    );
+    eprintln!("Creating layer surface {} for output {}", layer_surface_id, output_name);
 
     layer_surface.set_exclusive_zone(-1);
     layer_surface.set_anchor(
@@ -72,7 +66,7 @@ pub fn create_monitor_state(
             | zwlr_layer_surface_v1::Anchor::Right
             | zwlr_layer_surface_v1::Anchor::Bottom,
     );
-
+    
     surface.commit();
 
     let display_ptr = conn.display().id().as_ptr();
@@ -115,9 +109,10 @@ pub fn create_monitor_state(
 
     let initial_width = 100;
     let initial_height = 100;
-
-    let egl_window = wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
-        .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
+    
+    let egl_window =
+        wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
+            .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
 
     let egl_surface = unsafe {
         egl_instance.create_window_surface(
@@ -142,11 +137,11 @@ pub fn create_monitor_state(
         egl_surface,
         egl_context: context,
         renderer,
-        _output_info: output_info.clone(),
+        output_info: output_info.clone(),
         egl_window,
         current_width: initial_width as u32,
         current_height: initial_height as u32,
-        _layer_surface: layer_surface,
+        layer_surface,
         layer_surface_id,
         configured: false,
         output_name,
@@ -156,15 +151,9 @@ pub fn create_monitor_state(
 impl MonitorState {
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         if self.current_width != width || self.current_height != height {
-            eprintln!(
-                "Resizing monitor {} (surface {}) from {}x{} to {}x{}",
-                self.output_name,
-                self.layer_surface_id,
-                self.current_width,
-                self.current_height,
-                width,
-                height
-            );
+            eprintln!("Resizing monitor {} (surface {}) from {}x{} to {}x{}", 
+                     self.output_name, self.layer_surface_id,
+                     self.current_width, self.current_height, width, height);
             self.egl_window.resize(width as i32, height as i32, 0, 0);
             self.current_width = width;
             self.current_height = height;

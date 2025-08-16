@@ -69,6 +69,7 @@ pub struct VideoDecoder {
     last_frame_time: f64,
     frame_duration_ms: f64,
     accumulated_time: f64,
+    last_frame_updated: bool,
 }
 
 impl VideoDecoder {
@@ -167,10 +168,14 @@ impl VideoDecoder {
             last_frame_time: crate::utils::get_time_millis() as f64,
             frame_duration_ms,
             accumulated_time: 0.0,
+            last_frame_updated: false,
         })
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
+        // Reset frame update flag
+        self.last_frame_updated = false;
+
         // Timing
         let now = crate::utils::get_time_millis() as f64;
         let dt = now - self.last_frame_time;
@@ -219,6 +224,7 @@ impl VideoDecoder {
                                 rgb_frame.data(0).as_ptr() as *const _,
                             );
                         }
+                        self.last_frame_updated = true;
                         return Ok(true);
                     }
                 }
@@ -259,11 +265,17 @@ impl VideoDecoder {
     pub fn texture(&self) -> u32 {
         self.texture
     }
+    
     pub fn width(&self) -> u32 {
         self._width
     }
+    
     pub fn height(&self) -> u32 {
         self._height
+    }
+
+    pub fn has_new_frame(&self) -> bool {
+        self.last_frame_updated
     }
 }
 
@@ -274,5 +286,3 @@ pub fn load_shader(path: &str) -> Result<String> {
         .map_err(|e| anyhow!("Failed to read shader file {}: {}", path, e))?;
     Ok(source)
 }
-
-
