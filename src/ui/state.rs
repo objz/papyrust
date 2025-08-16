@@ -63,7 +63,7 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
 
             if let Some(file_name) = &project.meta.file {
                 let video_path = format!("{}/{}", project.path, file_name);
-                crate::ui::ipc::set_video("DP-3".to_string(), video_path, None).unwrap_or_else(
+                crate::ui::ipc::set_video("DP-2".to_string(), video_path, None).unwrap_or_else(
                     |e| {
                         error!("Failed to set video: {}", e);
                     },

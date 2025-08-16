@@ -142,7 +142,6 @@ pub fn init(
     let mut last_fps_check = utils::get_time_millis();
 
     let target_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 };
-    let mut adaptive_frame_time = target_frame_time;
 
     loop {
         let frame_start = utils::get_time_millis();
@@ -295,7 +294,7 @@ pub fn init(
                 utils::sleep_millis(target_frame_time - elapsed);
             }
         } else {
-            adaptive_frame_time = if any_video_updated {
+            let adaptive_frame_time = if any_video_updated {
                 target_frame_time
             } else {
                 target_frame_time * 2
