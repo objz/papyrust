@@ -62,6 +62,7 @@ pub fn init(
                 &egl_instance,
                 &conn,
                 &qh,
+                fps,
             )?;
             monitor_states.insert(name.clone(), ms);
             app_state.total_surfaces += 1;
@@ -74,7 +75,6 @@ pub fn init(
     }
     event_queue.roundtrip(&mut app_state)?;
 
-    // Apply configured sizes to monitor states - match by layer surface ID
     for ms in monitor_states.values_mut() {
         if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id) {
             eprintln!("Applying initial config to {}: {}x{}", ms.output_name, width, height);
@@ -84,14 +84,11 @@ pub fn init(
         }
     }
 
-    // Set proper swap intervals for video content
     let mut has_video = matches!(media_type, MediaType::Video { .. });
     for ms in monitor_states.values() {
         if has_video {
-            // For video: use adaptive VSync (1) to prevent tearing but allow frame drops
             egl_instance.swap_interval(ms.egl_display, 1)?;
         } else {
-            // For static content: use standard VSync based on FPS setting
             egl_instance.swap_interval(ms.egl_display, if fps == 0 { 1 } else { 0 })?;
         }
     }
@@ -107,21 +104,17 @@ pub fn init(
     let mut frame_count = 0u64;
     let mut last_fps_check = utils::get_time_millis();
 
-    // Adaptive frame timing for video
     let target_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 }; // Default to ~60fps
     let mut adaptive_frame_time = target_frame_time;
 
     loop {
         let frame_start = utils::get_time_millis();
 
-        // Handle configuration changes
         event_queue.dispatch_pending(&mut app_state)?;
         
-        // Apply any new configuration sizes - match correctly by layer surface ID
         for ms in monitor_states.values_mut() {
             if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id) {
                 if !ms.configured || ms.current_width != *width || ms.current_height != *height {
-                    // Verify this config belongs to our surface
                     if let Some(config_output) = app_state.surface_to_output.get(&ms.layer_surface_id) {
                         if config_output == &ms.output_name {
                             ms.resize(*width, *height)?;
@@ -134,7 +127,6 @@ pub fn init(
         if let Ok(media_change) = ipc_receiver.try_recv() {
             let new_has_video = matches!(media_change.media_type, MediaType::Video { .. });
             
-            // Update swap intervals if media type changed
             if has_video != new_has_video {
                 has_video = new_has_video;
                 for ms in monitor_states.values() {
@@ -193,7 +185,7 @@ pub fn init(
                         Some(ms.egl_surface),
                         Some(ms.egl_context),
                     )?;
-                    ms.renderer.update_media(media_change.media_type)?;
+                    ms.renderer.update_media(media_change.media_type, fps)?;
                 }
             } else {
                 for ms in monitor_states.values_mut() {
@@ -203,7 +195,7 @@ pub fn init(
                         Some(ms.egl_surface),
                         Some(ms.egl_context),
                     )?;
-                    ms.renderer.update_media(media_change.media_type.clone())?;
+                    ms.renderer.update_media(media_change.media_type.clone(), fps)?;
                 }
             }
         }
@@ -218,7 +210,6 @@ pub fn init(
                 Some(ms.egl_context),
             )?;
             
-            // Check if video frame actually updated
             let video_updated = ms.renderer.has_new_frame();
             if video_updated {
                 any_video_updated = true;
@@ -235,26 +226,25 @@ pub fn init(
 
         frame_count += 1;
 
-        // Adaptive frame timing for videos
-        if has_video {
-            if any_video_updated {
-                // Video frame updated, use normal timing
-                adaptive_frame_time = target_frame_time;
-            } else {
-                // No new video frame, reduce rendering frequency to save resources
-                adaptive_frame_time = target_frame_time * 2;
+        if has_video && fps == 0 {
+            let elapsed = utils::get_time_millis() - frame_start;
+            let min_frame_time = 8; 
+            if elapsed < min_frame_time {
+                utils::sleep_millis(min_frame_time - elapsed);
             }
-        }
-
-        // Frame rate limiting with adaptive timing
-        if fps > 0 || has_video {
+        } else if fps > 0 {
+            let elapsed = utils::get_time_millis() - frame_start;
+            if elapsed < target_frame_time {
+                utils::sleep_millis(target_frame_time - elapsed);
+            }
+        } else {
+            adaptive_frame_time = if any_video_updated { target_frame_time } else { target_frame_time * 2 };
             let elapsed = utils::get_time_millis() - frame_start;
             if elapsed < adaptive_frame_time {
                 utils::sleep_millis(adaptive_frame_time - elapsed);
             }
         }
 
-        // Debug frame rate every 5 seconds
         if frame_count % 300 == 0 {
             let now = utils::get_time_millis();
             let fps_actual = 300000 / (now - last_fps_check + 1);

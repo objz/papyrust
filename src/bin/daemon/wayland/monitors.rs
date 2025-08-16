@@ -32,6 +32,7 @@ pub fn create_monitor_state(
     egl_instance: &egl::Instance<egl::Static>,
     conn: &Connection,
     qh: &QueueHandle<AppState>,
+    fps: u16,
 ) -> Result<MonitorState> {
     let surface = compositor.create_surface(qh, ());
     let input_region = compositor.create_region(qh, ());
@@ -130,7 +131,7 @@ pub fn create_monitor_state(
         Some(context),
     )?;
 
-    let renderer = MediaRenderer::new(media_type)?;
+    let renderer = MediaRenderer::new(media_type, fps)?;
 
     Ok(MonitorState {
         egl_display,

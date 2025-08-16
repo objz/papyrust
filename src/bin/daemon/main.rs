@@ -13,6 +13,7 @@ mod utils;
 mod gl_bindings {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
 }
+
 #[derive(ValueEnum, Clone, Debug)]
 enum Layer {
     Bottom,
@@ -20,7 +21,6 @@ enum Layer {
     Overlay,
     Background,
 }
-
 
 impl std::fmt::Display for Layer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,8 +44,8 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long, default_value = "30")]
-    fps: u16,
+    #[arg(short, long)]
+    fps: Option<u16>,
 
     #[arg(short, long)]
     layer: Option<Layer>,
@@ -91,7 +91,7 @@ fn main() -> Result<()> {
 
     wayland::init(
         init_media,
-        args.fps,
+        args.fps.unwrap_or(0), 
         args.layer.as_ref().map(|l| l.to_string()).as_deref(),
         args.fifo.as_deref(),
         rx,

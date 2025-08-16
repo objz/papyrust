@@ -19,11 +19,12 @@ pub struct MediaRenderer {
     media_height: u32,
     start_time: u64,
     media_type: MediaType,
+    fps: u16,
 }
 
 impl MediaRenderer {
-    pub fn new(media_type: MediaType) -> Result<Self> {
-        eprintln!("Creating MediaRenderer with type: {:?}", media_type);
+    pub fn new(media_type: MediaType, fps: u16) -> Result<Self> {
+        eprintln!("Creating MediaRenderer with type: {:?}, fps: {}", media_type, fps);
 
         let start_time = utils::get_time_millis();
 
@@ -69,7 +70,11 @@ impl MediaRenderer {
                         (program, Some(texture), None, w, h)
                     }
                     MediaType::Video { path, shader } => {
-                        let decoder = VideoDecoder::new(path)?;
+                        let decoder = if fps > 0 {
+                            VideoDecoder::new_with_fps(path, Some(fps as f64))?
+                        } else {
+                            VideoDecoder::new(path)?
+                        };
                         let (w, h) = (decoder.width(), decoder.height());
                         let texture = decoder.texture();
                         let program = if let Some(s) = shader {
@@ -93,6 +98,7 @@ impl MediaRenderer {
             vbo,
             start_time,
             media_type,
+            fps,
         })
     }
 
@@ -112,10 +118,10 @@ impl MediaRenderer {
 
         if media_w <= 0.0 || media_h <= 0.0 {
             let verts: [f32; 16] = [
-                -1.0, 1.0, 0.0, 0.0,  // Flipped Y texture coordinate
-                -1.0, -1.0, 0.0, 1.0, // Flipped Y texture coordinate
-                1.0, -1.0, 1.0, 1.0,  // Flipped Y texture coordinate
-                1.0, 1.0, 1.0, 0.0,   // Flipped Y texture coordinate
+                -1.0, 1.0, 0.0, 0.0,  
+                -1.0, -1.0, 0.0, 1.0, 
+                1.0, -1.0, 1.0, 1.0,  
+                1.0, 1.0, 1.0, 0.0,   
             ];
             
             unsafe {
@@ -135,10 +141,10 @@ impl MediaRenderer {
         let scaled_h = (media_h * scale_factor) / output_h;
 
         let verts: [f32; 16] = [
-            -scaled_w, scaled_h, 0.0, 0.0,  // Flipped Y texture coordinate
-            -scaled_w, -scaled_h, 0.0, 1.0, // Flipped Y texture coordinate
-            scaled_w, -scaled_h, 1.0, 1.0,  // Flipped Y texture coordinate
-            scaled_w, scaled_h, 1.0, 0.0,   // Flipped Y texture coordinate
+            -scaled_w, scaled_h, 0.0, 0.0,  
+            -scaled_w, -scaled_h, 0.0, 1.0, 
+            scaled_w, -scaled_h, 1.0, 1.0,  
+            scaled_w, scaled_h, 1.0, 0.0,   
         ];
 
         unsafe {
@@ -176,8 +182,8 @@ impl MediaRenderer {
         Self::compile(vert_source, frag_source)
     }
 
-    pub fn update_media(&mut self, new_media_type: MediaType) -> Result<()> {
-        eprintln!("Updating media to: {:?}", new_media_type);
+    pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
+        eprintln!("Updating media to: {:?}, fps: {}", new_media_type, fps);
 
         if let Some(texture) = self.texture {
             unsafe {
@@ -205,7 +211,11 @@ impl MediaRenderer {
                     (program, Some(texture), None, w, h)
                 }
                 MediaType::Video { path, shader } => {
-                    let decoder = VideoDecoder::new(path)?;
+                    let decoder = if fps > 0 {
+                        VideoDecoder::new_with_fps(path, Some(fps as f64))?
+                    } else {
+                        VideoDecoder::new(path)?
+                    };
                     let (w, h) = (decoder.width(), decoder.height());
                     let texture = decoder.texture();
                     let program = if let Some(s) = shader {
@@ -227,6 +237,7 @@ impl MediaRenderer {
         self.media_width = media_width;
         self.media_height = media_height;
         self.media_type = new_media_type;
+        self.fps = fps;
 
         Ok(())
     }
@@ -396,10 +407,10 @@ impl MediaRenderer {
 
     fn setup_geometry() -> Result<(u32, u32)> {
         let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 0.0,  // Flipped Y texture coordinate
-            -1.0, -1.0, 0.0, 1.0, // Flipped Y texture coordinate
-            1.0, -1.0, 1.0, 1.0,  // Flipped Y texture coordinate
-            1.0, 1.0, 1.0, 0.0,   // Flipped Y texture coordinate
+            -1.0, 1.0, 0.0, 0.0,  
+            -1.0, -1.0, 0.0, 1.0, 
+            1.0, -1.0, 1.0, 1.0,  
+            1.0, 1.0, 1.0, 0.0,   
         ];
 
         let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];

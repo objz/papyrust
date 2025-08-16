@@ -66,15 +66,30 @@ pub struct VideoDecoder {
     input_ctx: ffmpeg::format::context::Input,
     stream_index: usize,
     video_path: String,
-    last_frame_time: f64,
-    frame_duration_ms: f64,
-    accumulated_time: f64,
     last_frame_updated: bool,
+    time_base: f64,
+    video_start_time: f64,
+    playback_start_time: f64,
+    forced_fps: Option<f64>,
+    frame_count: u64,
+    last_forced_frame_time: f64,
+    current_frame: Option<ffmpeg::frame::Video>,
+    next_frame: Option<ffmpeg::frame::Video>,
+    reached_eof: bool,
 }
 
 impl VideoDecoder {
     pub fn new(path: &str) -> Result<Self> {
-        eprintln!("Initializing video decoder for: {}", path);
+        Self::new_with_fps(path, None)
+    }
+
+    pub fn new_with_fps(path: &str, forced_fps: Option<f64>) -> Result<Self> {
+        let fps_msg = if let Some(fps) = forced_fps {
+            format!("forced FPS: {:.1}", fps)
+        } else {
+            "original timing".to_string()
+        };
+        eprintln!("Initializing video decoder for: {} ({})", path, fps_msg);
 
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
         let input_ctx = ffmpeg::format::input(&Path::new(path))
@@ -96,26 +111,42 @@ impl VideoDecoder {
         let width = decoder.width();
         let height = decoder.height();
 
+        let time_base = {
+            let tb = stream.time_base();
+            tb.0 as f64 / tb.1 as f64
+        };
+
+        let video_start_time = {
+            let start = stream.start_time();
+            if start != ffmpeg::ffi::AV_NOPTS_VALUE {
+                start as f64 * time_base
+            } else {
+                0.0
+            }
+        };
+
         let video_fps = {
             let rate = stream.rate();
             let fps = if rate.1 > 0 {
                 rate.0 as f64 / rate.1 as f64
             } else {
-                let tb = stream.time_base();
-                if tb.1 > 0 {
-                    tb.1 as f64 / tb.0 as f64
+                let avg_rate = stream.avg_frame_rate();
+                if avg_rate.1 > 0 {
+                    avg_rate.0 as f64 / avg_rate.1 as f64
                 } else {
-                    30.0
+                    1.0 / time_base 
                 }
             };
-            if (1.0..=240.0).contains(&fps) {
+            if (0.1..=240.0).contains(&fps) {
                 fps
             } else {
-                eprintln!("Warning: Unusual FPS ({:.2}), defaulting to 30", fps);
-                30.0
+                eprintln!("Warning: Unusual FPS ({:.2}), using time base", fps);
+                1.0 / time_base
             }
         };
-        let frame_duration_ms = (1000.0 / video_fps).max(1.0);
+
+        eprintln!("Video info: {}x{}, FPS: {:.2}, time_base: {:.6}, start_time: {:.3}", 
+                 width, height, video_fps, time_base, video_start_time);
 
         let scaler = if decoder.format() != ffmpeg::format::Pixel::RGB24 {
             Some(
@@ -165,87 +196,201 @@ impl VideoDecoder {
             input_ctx,
             stream_index,
             video_path: path.to_string(),
-            last_frame_time: crate::utils::get_time_millis() as f64,
-            frame_duration_ms,
-            accumulated_time: 0.0,
             last_frame_updated: false,
+            time_base,
+            video_start_time,
+            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            forced_fps,
+            frame_count: 0,
+            last_forced_frame_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            current_frame: None,
+            next_frame: None,
+            reached_eof: false,
         })
     }
 
     pub fn update_frame(&mut self) -> Result<bool> {
-        // Reset frame update flag
         self.last_frame_updated = false;
 
-        // Timing
-        let now = crate::utils::get_time_millis() as f64;
-        let dt = now - self.last_frame_time;
-        self.accumulated_time += dt;
-        self.last_frame_time = now;
-        if self.accumulated_time < self.frame_duration_ms {
-            return Ok(false);
-        }
-        self.accumulated_time -= self.frame_duration_ms;
+        let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
 
-        // Try to read packets & decode
-        let mut saw_any = false;
+        if let Some(forced_fps) = self.forced_fps {
+            let frame_duration = 1.0 / forced_fps;
+            let elapsed = current_time - self.last_forced_frame_time;
+            
+            if elapsed < frame_duration {
+                return Ok(false); 
+            }
+            
+            self.last_forced_frame_time = current_time;
+            self.frame_count += 1;
+            
+            return self.decode_next_frame();
+        }
+
+        let playback_time = current_time - self.playback_start_time;
+        let video_time = playback_time + self.video_start_time;
+
+        loop {
+            if let Some(ref frame) = self.current_frame {
+                let frame_pts = frame.pts().unwrap_or(0);
+                let frame_time = frame_pts as f64 * self.time_base;
+                
+                if let Some(ref next_frame) = self.next_frame {
+                    let next_pts = next_frame.pts().unwrap_or(0);
+                    let next_time = next_pts as f64 * self.time_base;
+                    
+                    if video_time >= next_time {
+                        self.current_frame = self.next_frame.take();
+                        self.upload_current_frame();
+                        self.last_frame_updated = true;
+                    } else if video_time >= frame_time {
+                        return Ok(false);
+                    } else {
+                        return Ok(false);
+                    }
+                } else {
+                    if self.decode_frame_to_buffer()? {
+                        continue; 
+                    } else {
+                        eprintln!("Video ended, restarting...");
+                        self.restart_video()?;
+                        continue;
+                    }
+                }
+            } else {
+                if self.decode_frame_to_buffer()? {
+                    if self.next_frame.is_some() {
+                        self.current_frame = self.next_frame.take();
+                        self.upload_current_frame();
+                        self.last_frame_updated = true;
+                        return Ok(true);
+                    }
+                } else {
+                    eprintln!("No initial frames available, restarting...");
+                    self.restart_video()?;
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn decode_next_frame(&mut self) -> Result<bool> {
+        let mut packets_processed = 0;
         for (stream, packet) in self.input_ctx.packets() {
             if stream.index() != self.stream_index {
                 continue;
             }
-            saw_any = true;
+            
+            packets_processed += 1;
+            if packets_processed > 100 {
+                break;
+            }
+            
             match self.decoder.send_packet(&packet) {
                 Ok(_) => {
                     let mut decoded = ffmpeg::frame::Video::empty();
                     while self.decoder.receive_frame(&mut decoded).is_ok() {
-                        let rgb_frame = if decoded.format() != ffmpeg::format::Pixel::RGB24 {
-                            if let Some(ref mut scaler) = self.scaler {
-                                let mut out = ffmpeg::frame::Video::empty();
-                                scaler.run(&decoded, &mut out)
-                                      .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                                out
-                            } else {
-                                decoded.clone()
-                            }
-                        } else {
-                            decoded.clone()
-                        };
-                        unsafe {
-                            gl::BindTexture(gl::TEXTURE_2D, self.texture);
-                            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-                            gl::TexSubImage2D(
-                                gl::TEXTURE_2D,
-                                0,
-                                0,
-                                0,
-                                rgb_frame.width() as i32,
-                                rgb_frame.height() as i32,
-                                gl::RGB,
-                                gl::UNSIGNED_BYTE,
-                                rgb_frame.data(0).as_ptr() as *const _,
-                            );
-                        }
+                        let rgb_frame = self.convert_frame(decoded)?;
+                        self.upload_frame(&rgb_frame);
                         self.last_frame_updated = true;
                         return Ok(true);
                     }
                 }
                 Err(ffmpeg::Error::Eof) => {
+                    eprintln!("Video EOF reached, restarting...");
                     self.restart_video()?;
-                    return self.update_frame();
+                    return self.decode_next_frame();
                 }
                 Err(_) => continue,
             }
         }
 
-        // If no packets left, rewind
-        if !saw_any {
-            self.restart_video()?;
-            return self.update_frame();
+        eprintln!("No more packets, restarting video...");
+        self.restart_video()?;
+        self.decode_next_frame()
+    }
+
+    fn decode_frame_to_buffer(&mut self) -> Result<bool> {
+        if self.reached_eof {
+            return Ok(false);
         }
 
+        for (stream, packet) in self.input_ctx.packets() {
+            if stream.index() != self.stream_index {
+                continue;
+            }
+            
+            match self.decoder.send_packet(&packet) {
+                Ok(_) => {
+                    let mut decoded = ffmpeg::frame::Video::empty();
+                    while self.decoder.receive_frame(&mut decoded).is_ok() {
+                        let rgb_frame = self.convert_frame(decoded)?;
+                        self.next_frame = Some(rgb_frame);
+                        return Ok(true);
+                    }
+                }
+                Err(ffmpeg::Error::Eof) => {
+                    self.reached_eof = true;
+                    return Ok(false); 
+                }
+                Err(_) => continue,
+            }
+        }
+        
+        self.reached_eof = true;
         Ok(false)
     }
 
+    fn convert_frame(&mut self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video> {
+        if frame.format() != ffmpeg::format::Pixel::RGB24 {
+            if let Some(ref mut scaler) = self.scaler {
+                let mut rgb_frame = ffmpeg::frame::Video::empty();
+                scaler.run(&frame, &mut rgb_frame)
+                      .map_err(|e| anyhow!("Scaling failed: {}", e))?;
+                // Preserve timestamp
+                rgb_frame.set_pts(frame.pts());
+                Ok(rgb_frame)
+            } else {
+                Ok(frame)
+            }
+        } else {
+            Ok(frame)
+        }
+    }
+
+    fn upload_current_frame(&self) {
+        if let Some(ref frame) = self.current_frame {
+            self.upload_frame(frame);
+        }
+    }
+
+    fn upload_frame(&self, frame: &ffmpeg::frame::Video) {
+        unsafe {
+            gl::BindTexture(gl::TEXTURE_2D, self.texture);
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+            gl::TexSubImage2D(
+                gl::TEXTURE_2D,
+                0,
+                0,
+                0,
+                frame.width() as i32,
+                frame.height() as i32,
+                gl::RGB,
+                gl::UNSIGNED_BYTE,
+                frame.data(0).as_ptr() as *const _,
+            );
+        }
+    }
+
     fn restart_video(&mut self) -> Result<()> {
+        eprintln!("Restarting video playback");
+        
+        self.current_frame = None;
+        self.next_frame = None;
+        self.frame_count = 0;
+        self.reached_eof = false;
+        
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
             eprintln!("Seek failed; re-opening video");
             self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
@@ -257,8 +402,9 @@ impl VideoDecoder {
             let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
             self.decoder = context_decoder.decoder().video()?;
         }
-        self.accumulated_time = 0.0;
-        self.last_frame_time = crate::utils::get_time_millis() as f64;
+        
+        self.playback_start_time = crate::utils::get_time_millis() as f64 / 1000.0;
+        self.last_forced_frame_time = self.playback_start_time;
         Ok(())
     }
 
