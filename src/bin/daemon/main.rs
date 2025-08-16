@@ -1,10 +1,11 @@
-use clap::ValueEnum;
 use anyhow::Result;
-use clap::Parser;
-use log::info;
-use std::process;
-use std::sync::mpsc;
-use std::thread;
+use clap::{Parser, ValueEnum};
+use std::{process, sync::mpsc, thread};
+
+// NEW: tracing imports
+use tracing::info;
+use tracing_log::LogTracer;
+use tracing_subscriber::{fmt, EnvFilter};
 
 mod ipc;
 mod media;
@@ -44,8 +45,8 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long)]
-    fps: Option<u16>,
+    #[arg(short, long, default_value = "30")]
+    fps: u16,
 
     #[arg(short, long)]
     layer: Option<Layer>,
@@ -58,7 +59,15 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    // NEW: structured logging
+    let _ = LogTracer::init(); // forward `log` records into `tracing`
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("papyrust=info,wayland_client=warn"));
+    fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .compact()
+        .init();
 
     let args = Args::parse();
 
@@ -81,7 +90,7 @@ fn main() -> Result<()> {
     let ipc_tx = tx.clone();
     thread::spawn(move || {
         if let Err(e) = ipc::start_server(ipc_tx) {
-            eprintln!("IPC server error: {}", e);
+            tracing::error!("IPC server error: {e}");
         }
     });
 
@@ -91,7 +100,7 @@ fn main() -> Result<()> {
 
     wayland::init(
         init_media,
-        args.fps.unwrap_or(0), 
+        args.fps,
         args.layer.as_ref().map(|l| l.to_string()).as_deref(),
         args.fifo.as_deref(),
         rx,

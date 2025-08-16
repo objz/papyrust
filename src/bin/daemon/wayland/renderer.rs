@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use std::ffi::{CStr, CString};
 use wayland_client::protocol::{wl_output};
 
+use tracing::info;
 use crate::gl_bindings as gl;
 use crate::media::{
     load_shader, ImageLoader, MediaType, VideoDecoder,
@@ -24,7 +25,7 @@ pub struct MediaRenderer {
 
 impl MediaRenderer {
     pub fn new(media_type: MediaType, fps: u16) -> Result<Self> {
-        eprintln!("Creating MediaRenderer with type: {:?}, fps: {}", media_type, fps);
+        info!("Creating MediaRenderer with type: {:?}, fps: {}", media_type, fps);
 
         let start_time = utils::get_time_millis();
 
@@ -183,7 +184,7 @@ impl MediaRenderer {
     }
 
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
-        eprintln!("Updating media to: {:?}, fps: {}", new_media_type, fps);
+        info!("Updating media to: {:?}, fps: {}", new_media_type, fps);
 
         if let Some(texture) = self.texture {
             unsafe {

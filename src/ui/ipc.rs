@@ -3,6 +3,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
+use tracing::info;
 const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
 
 pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
@@ -46,6 +47,6 @@ fn send_command(cmd: serde_json::Value) -> Result<()> {
     let mut response = String::new();
     reader.read_line(&mut response)?;
 
-    println!("{}", response.trim());
+    info!("{}", response.trim());
     Ok(())
 }

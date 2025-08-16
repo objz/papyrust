@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser)]
 #[command(name = "papyrust")]
@@ -38,6 +39,13 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    let _ = fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off")),
+        )
+        .with_target(true)
+        .compact()
+        .try_init();
     let args = Args::parse();
 
     let mut stream = UnixStream::connect("/tmp/papyrust-daemon.sock")?;

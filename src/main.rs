@@ -108,11 +108,18 @@ impl Papyrust {
     }
 }
 
+
 fn main() -> iced::Result {
+    let _ = tracing_log::LogTracer::init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("papyrust=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .compact()
+        .try_init();
+
     iced::application("Papyrust", Papyrust::update, Papyrust::view)
-        // .font(FIRA_BYTES)
-        // .font(UNIFONT_BYTES)
-        // .default_font(FIRA)
         .settings(Settings {
             default_font: Font::MONOSPACE,
             ..Default::default()
@@ -121,3 +128,4 @@ fn main() -> iced::Result {
         .theme(|_| iced::theme::Theme::GruvboxDark)
         .run_with(Papyrust::new)
 }
+

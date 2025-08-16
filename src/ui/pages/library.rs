@@ -9,6 +9,7 @@ use iced::{Alignment, Padding, Task};
 use image::{imageops, load_from_memory, RgbaImage};
 use tokio::{fs, task};
 
+use tracing::error;
 use crate::ui::loader::project::{Project, ProjectType};
 use crate::ui::loader::Loader;
 use crate::{Message, Papyrust};
@@ -40,7 +41,7 @@ impl Library {
                     projects.push(project);
                     preview.push(None);
                 }
-                Err(e) => eprintln!("Project parse error: {}", e),
+                Err(e) => error!("Project parse error: {}", e),
             }
         }
 

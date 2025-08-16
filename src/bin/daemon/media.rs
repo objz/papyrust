@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use tracing::{info, error};
 use crate::gl_bindings as gl;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,13 +24,13 @@ pub struct ImageLoader;
 
 impl ImageLoader {
     pub fn load_texture(path: &str) -> Result<u32> {
-        eprintln!("Loading image: {}", path);
+        info!("Loading image: {}", path);
 
         let img = image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
         let rgba = img.to_rgba8();
         let (width, height) = (img.width(), img.height());
 
-        eprintln!("Image loaded: {}x{}", width, height);
+        info!("Image loaded: {}x{}", width, height);
 
         let mut texture = 0;
         unsafe {
@@ -89,7 +90,7 @@ impl VideoDecoder {
         } else {
             "original timing".to_string()
         };
-        eprintln!("Initializing video decoder for: {} ({})", path, fps_msg);
+        info!("Initializing video decoder for: {} ({})", path, fps_msg);
 
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
         let input_ctx = ffmpeg::format::input(&Path::new(path))
@@ -140,12 +141,12 @@ impl VideoDecoder {
             if (0.1..=240.0).contains(&fps) {
                 fps
             } else {
-                eprintln!("Warning: Unusual FPS ({:.2}), using time base", fps);
+                error!("Warning: Unusual FPS ({:.2}), using time base", fps);
                 1.0 / time_base
             }
         };
 
-        eprintln!("Video info: {}x{}, FPS: {:.2}, time_base: {:.6}, start_time: {:.3}", 
+        info!("Video info: {}x{}, FPS: {:.2}, time_base: {:.6}, start_time: {:.3}", 
                  width, height, video_fps, time_base, video_start_time);
 
         let scaler = if decoder.format() != ffmpeg::format::Pixel::RGB24 {
@@ -267,7 +268,7 @@ impl VideoDecoder {
                         return Ok(true);
                     }
                 } else {
-                    eprintln!("No initial frames available, restarting...");
+                    info!("No initial frames available, restarting...");
                     self.restart_video()?;
                     continue;
                 }
@@ -392,7 +393,7 @@ impl VideoDecoder {
         self.reached_eof = false;
         
         if let Err(_) = self.input_ctx.seek(0, 0..i64::MAX) {
-            eprintln!("Seek failed; re-opening video");
+            error!("Seek failed; re-opening video");
             self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
                 .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
             let stream = self.input_ctx

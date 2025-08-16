@@ -1,4 +1,4 @@
-use log::debug;
+use tracing::debug;
 use std::collections::HashMap;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_region, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, Proxy};

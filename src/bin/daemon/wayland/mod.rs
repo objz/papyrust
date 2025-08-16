@@ -4,7 +4,7 @@ use crate::wayland::monitors::create_monitor_state;
 use crate::wayland::state::AppState;
 use anyhow::{Result, anyhow};
 use khronos_egl as egl;
-use log::info;
+use tracing::{info, error};
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::mpsc::Receiver;
@@ -77,10 +77,10 @@ pub fn init(
 
     for ms in monitor_states.values_mut() {
         if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id) {
-            eprintln!("Applying initial config to {}: {}x{}", ms.output_name, width, height);
+            info!("Applying initial config to {}: {}x{}", ms.output_name, width, height);
             ms.resize(*width, *height)?;
         } else {
-            eprintln!("No configuration found for monitor {}", ms.output_name);
+            error!("No configuration found for monitor {}", ms.output_name);
         }
     }
 
@@ -247,8 +247,7 @@ pub fn init(
 
         if frame_count % 300 == 0 {
             let now = utils::get_time_millis();
-            let fps_actual = 300000 / (now - last_fps_check + 1);
-            eprintln!("Actual FPS: {}, Video updated: {}", fps_actual, any_video_updated);
+            let _fps_actual = 300000 / (now - last_fps_check + 1);
             last_fps_check = now;
         }
     }

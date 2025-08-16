@@ -3,6 +3,7 @@ use khronos_egl as egl;
 use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use tracing::info;
 
 use crate::media::MediaType;
 use crate::wayland::renderer::MediaRenderer;
@@ -58,7 +59,7 @@ pub fn create_monitor_state(
     let layer_surface_id = layer_surface.id().protocol_id();
     let output_name = output_info.name.clone().unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
 
-    eprintln!("Creating layer surface {} for output {}", layer_surface_id, output_name);
+    info!("Creating layer surface {} for output {}", layer_surface_id, output_name);
 
     layer_surface.set_exclusive_zone(-1);
     layer_surface.set_anchor(
@@ -152,7 +153,7 @@ pub fn create_monitor_state(
 impl MonitorState {
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         if self.current_width != width || self.current_height != height {
-            eprintln!("Resizing monitor {} (surface {}) from {}x{} to {}x{}", 
+            info!("Resizing monitor {} (surface {}) from {}x{} to {}x{}", 
                      self.output_name, self.layer_surface_id,
                      self.current_width, self.current_height, width, height);
             self.egl_window.resize(width as i32, height as i32, 0, 0);

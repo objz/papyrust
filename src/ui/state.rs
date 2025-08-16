@@ -1,5 +1,6 @@
 use iced::{widget::image::Handle, Task};
 
+use tracing::error;
 use crate::{Message, Papyrust};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +65,7 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
                 let video_path = format!("{}/{}", project.path, file_name);
                 crate::ui::ipc::set_video("DP-3".to_string(), video_path, None).unwrap_or_else(
                     |e| {
-                        eprintln!("Failed to set video: {}", e);
+                        error!("Failed to set video: {}", e);
                     },
                 );
             }
@@ -79,7 +80,7 @@ pub fn update(app: &mut Papyrust, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::VideoError(path, error) => {
-            eprintln!("Failed to load video {}: {}", path, error);
+            error!("Failed to load video {}: {}", path, error);
             Task::none()
         }
         Message::DoNothing => Task::none(),

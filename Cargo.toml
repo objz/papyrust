@@ -26,10 +26,11 @@ khronos-egl = { version = "6.0", features = ["static"] }
 gl = "0.14"
 libc = "0.2"
 anyhow = "1.0"
-thiserror = "1.0"
-log = "0.4"
-env_logger = "0.10"
 ffmpeg-next = "7.1.0"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-log = "0.2"
 
 [build-dependencies]
 gl_generator = "0.14"

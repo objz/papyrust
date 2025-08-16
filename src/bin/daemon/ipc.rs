@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc::Sender;
 use std::thread;
-
+use tracing::{info, warn};
 use crate::media::MediaType;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,7 +48,7 @@ pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
     let listener =
         UnixListener::bind(socket_path).map_err(|e| anyhow!("Failed to bind IPC socket: {}", e))?;
 
-    println!("IPC server listening on {}", socket_path);
+    info!("IPC server listening on {}", socket_path);
 
     for stream in listener.incoming() {
         match stream {
@@ -56,12 +56,11 @@ pub fn start_server(tx: Sender<MediaChange>) -> Result<()> {
                 let tx_clone = tx.clone();
                 thread::spawn(move || {
                     if let Err(e) = handle_client(stream, tx_clone) {
-                        eprintln!("Client error: {}", e);
-                    }
+                        warn!("Client error: {e}");                    }
                 });
             }
             Err(e) => {
-                eprintln!("Connection failed: {}", e);
+                warn!("Connection failed: {}", e);
             }
         }
     }
