@@ -15,7 +15,6 @@ pub struct WaylandSurface {
     pub current_width: u32,
     pub current_height: u32,
     pub surface_id: SurfaceId,
-    pub configured: bool,
     pub output_name: String,
 }
 
@@ -121,7 +120,6 @@ impl WaylandSurface {
             current_width: initial_width as u32,
             current_height: initial_height as u32,
             surface_id,
-            configured: false,
             output_name,
         })
     }
@@ -193,7 +191,6 @@ impl crate::wayland::traits::WaylandSurface for WaylandSurface {
             self.egl_window.resize(width as i32, height as i32, 0, 0);
             self.current_width = width;
             self.current_height = height;
-            self.configured = true;
         } else {
             tracing::debug!(
                 event = "surface_resize_skipped",

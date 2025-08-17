@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use tracing::info;
 const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
 
-pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+pub fn _set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
     let cmd = json!({
         "SetImage": {
             "path": path,
@@ -17,7 +17,7 @@ pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Resul
     send_command(cmd)
 }
 
-pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+pub fn set_video(_monitor: String, path: String, shader: Option<String>) -> Result<()> {
     let cmd = json!({
         "SetVideo": {
             "path": path,
@@ -28,7 +28,7 @@ pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Resul
     send_command(cmd)
 }
 
-pub fn set_shader(monitor: String, path: String) -> Result<()> {
+pub fn _set_shader(monitor: String, path: String) -> Result<()> {
     let cmd = json!({
         "SetShader": {
             "path": path,

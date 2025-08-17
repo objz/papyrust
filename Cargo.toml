@@ -4,34 +4,46 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-derive = "1.0.0"
-fast_image_resize = { version = "5.1.4", features = ["image"] }
-futures = "0.3.31"
+# Core UI dependencies
 iced = { version = "0.13.1", features = ["advanced", "image", "tokio"] }
 iced_aw = { version = "0.12.2", features = ["wrap"] }
 iced_video_player = { git = "https://github.com/jazzfool/iced_video_player" }
+
+# Image processing
 image = "0.25.6"
+fast_image_resize = { version = "5.1.4", features = ["image"] }
+
+# Async and utilities
+tokio = { version = "1.45.1", features = ["fs"] }
+futures = "0.3.31"
+url = "2.5.4"
+shellexpand = "3.1.1"
+
+# Serialization
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-shellexpand = "3.1.1"
-tokio = { version = "1.45.1", features = ["fs"] }
-url = "2.5.4"
 
+# CLI
 clap = { version = "4.4", features = ["derive"] }
+
+# Wayland
 wayland-client = "0.31"
 wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.2", features = ["client"] }
 wayland-egl = "0.32"
+
+# Graphics
 khronos-egl = { version = "6.0", features = ["static"] }
 gl = "0.14"
+
+# System
 libc = "0.2"
 anyhow = "1.0"
+
+# Media
 ffmpeg-next = "7.1.0"
 
-wgpu = "0.20"
-bytemuck = { version = "1.16", features = ["derive"] }
-pollster = "0.3"
-
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-log = "0.2"
@@ -61,4 +73,3 @@ path = "src/bin/cli.rs"
 [[bin]]
 name = "papyrust"
 path = "src/main.rs"
-

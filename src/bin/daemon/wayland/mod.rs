@@ -13,25 +13,25 @@ pub mod rendering;
 pub mod audio;
 pub mod monitors;
 
-use crate::wayland::monitors::manager::MonitorManager;
+use monitors::MonitorManager;
 use audio::fifo::FifoReader;
 use types::WaylandConfig;
 use traits::WaylandSurface as WaylandSurfaceTrait;
 
-pub struct WaylandManager {
+struct WaylandManager {
     monitor_manager: MonitorManager,
     config: WaylandConfig,
 }
 
 impl WaylandManager {
-    pub fn new(config: WaylandConfig) -> Self {
+    fn new(config: WaylandConfig) -> Self {
         Self {
             monitor_manager: MonitorManager::new(),
             config,
         }
     }
 
-    pub fn initialize(&mut self, conn: &Connection) -> Result<()> {
+    fn initialize(&mut self, conn: &Connection) -> Result<()> {
         let mut event_queue = conn.new_event_queue();
         let qh = event_queue.handle();
         let mut app_state = protocol::events::AppState::new();
@@ -57,7 +57,7 @@ impl WaylandManager {
 
         let mut total_surfaces = 0;
         for output_info in app_state.outputs.values() {
-            if let Some(_name) = &output_info.name {
+            if output_info.name.is_some() {
                 self.monitor_manager.create_surface(
                     output_info,
                     compositor,
@@ -116,7 +116,7 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        "Initializing Wayland stack with lossless scaling"
+        "Initializing Wayland stack"
     );
 
     let config = WaylandConfig {
@@ -213,7 +213,6 @@ pub fn init(
                 last_audio_path = None;
             }
 
-            // Update media - convert Option<Vec<String>> to Option<&[String]>
             let target_monitors = media_change.monitors.as_deref();
             wayland_manager.monitor_manager.update_media(
                 target_monitors,
@@ -228,29 +227,19 @@ pub fn init(
         frame_count += 1;
 
         // Frame timing
-        if has_video {
+        let elapsed = utils::get_time_millis() - frame_start;
+        let target_time = if has_video {
             if fps == 0 {
-                let elapsed = utils::get_time_millis() - frame_start;
-                let target_frame_time = if any_video_updated { 16 } else { 33 };
-                if elapsed < target_frame_time {
-                    utils::sleep_millis(target_frame_time - elapsed);
-                }
+                if any_video_updated { 16 } else { 33 }
             } else {
-                let elapsed = utils::get_time_millis() - frame_start;
-                if elapsed < target_frame_time {
-                    utils::sleep_millis(target_frame_time - elapsed);
-                }
+                target_frame_time
             }
         } else {
-            let elapsed = utils::get_time_millis() - frame_start;
-            let adaptive_frame_time = if any_video_updated {
-                target_frame_time
-            } else {
-                target_frame_time * 2
-            };
-            if elapsed < adaptive_frame_time {
-                utils::sleep_millis(adaptive_frame_time - elapsed);
-            }
+            if any_video_updated { target_frame_time } else { target_frame_time * 2 }
+        };
+        
+        if elapsed < target_time {
+            utils::sleep_millis(target_time - elapsed);
         }
 
         // FPS tracking

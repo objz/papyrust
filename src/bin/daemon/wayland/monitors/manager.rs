@@ -8,7 +8,7 @@ use crate::media::MediaType;
 use crate::wayland::rendering::surface::WaylandSurface;
 use crate::wayland::types::{OutputInfo, RenderContext};
 use crate::wayland::protocol::events::AppState;
-use crate::wayland::traits::{WaylandSurface as WaylandSurfaceTrait};
+use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
 use crate::wayland::audio::FifoReader;
 
 pub struct MonitorManager {
@@ -59,7 +59,6 @@ impl MonitorManager {
     pub fn update_media(&mut self, target_monitors: Option<&[String]>, media_type: MediaType, fps: u16) -> Result<()> {
         match target_monitors {
             None => {
-                // Apply to ALL monitors
                 tracing::info!(
                     event = "media_update_all",
                     ?media_type,
@@ -77,7 +76,6 @@ impl MonitorManager {
                 }
             }
             Some(target_names) => {
-                // Apply to specific monitors
                 tracing::info!(
                     event = "media_update_targeted",
                     targets = ?target_names,
@@ -141,12 +139,10 @@ impl MonitorManager {
     pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>) -> Result<bool> {
         let mut any_updated = false;
         
-        // We need to iterate over surfaces individually to handle EGL context switching
         let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
         
         for surface_name in surface_names {
             if let Some(surface) = self.surfaces.get_mut(&surface_name) {
-                // Make the EGL context current for this specific surface
                 self.egl_instance.make_current(
                     surface.egl_resources.display,
                     Some(surface.egl_resources.surface),
@@ -154,22 +150,18 @@ impl MonitorManager {
                     Some(surface.egl_resources.context),
                 )?;
 
-                // Check if this renderer has new frames
                 if surface.renderer.has_new_frame() {
                     any_updated = true;
                 }
 
-                // Create a fresh render context for this surface
                 let mut surface_context = RenderContext {
                     width: surface.current_width as i32,
                     height: surface.current_height as i32,
                     fifo_reader: fifo_reader.as_deref_mut(),
                 };
 
-                // Directly call the draw method on the renderer with proper context
                 surface.renderer.draw(&mut surface_context)?;
                 
-                // Swap buffers for this surface
                 self.egl_instance.swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
                 
                 tracing::trace!(
