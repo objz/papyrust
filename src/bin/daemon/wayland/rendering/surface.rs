@@ -11,7 +11,6 @@ use crate::wayland::protocol::events::AppState;
 pub struct WaylandSurface {
     pub egl_resources: EglResources,
     pub renderer: MediaRenderer,
-    pub output_info: OutputInfo,
     pub egl_window: wayland_egl::WlEglSurface,
     pub current_width: u32,
     pub current_height: u32,
@@ -118,7 +117,6 @@ impl WaylandSurface {
                 config: egl_resources.config,
             },
             renderer,
-            output_info: output_info.clone(),
             egl_window,
             current_width: initial_width as u32,
             current_height: initial_height as u32,

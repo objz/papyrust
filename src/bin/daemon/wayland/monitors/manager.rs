@@ -8,7 +8,7 @@ use crate::media::MediaType;
 use crate::wayland::rendering::surface::WaylandSurface;
 use crate::wayland::types::{OutputInfo, RenderContext};
 use crate::wayland::protocol::events::AppState;
-use crate::wayland::traits::{WaylandSurface as WaylandSurfaceTrait, MediaRenderer as MediaRendererTrait};
+use crate::wayland::traits::{WaylandSurface as WaylandSurfaceTrait};
 use crate::wayland::audio::FifoReader;
 
 pub struct MonitorManager {
@@ -73,7 +73,7 @@ impl MonitorManager {
                         monitor = %monitor_name,
                         "Applying media to monitor"
                     );
-                    MediaRendererTrait::update_media(&mut surface.renderer, media_type.clone(), fps)?;
+                    surface.renderer.update_media(media_type.clone(), fps)?;
                 }
             }
             Some(target_names) => {
@@ -96,7 +96,7 @@ impl MonitorManager {
                             monitor = %target_name,
                             "Applying media to target monitor"
                         );
-                        MediaRendererTrait::update_media(&mut surface.renderer, media_type.clone(), fps)?;
+                        surface.renderer.update_media(media_type.clone(), fps)?;
                         found_monitors.push(target_name);
                     } else {
                         missing_monitors.push(target_name);
@@ -163,7 +163,6 @@ impl MonitorManager {
                 let mut surface_context = RenderContext {
                     width: surface.current_width as i32,
                     height: surface.current_height as i32,
-                    transform: surface.output_info.config.transform,
                     fifo_reader: fifo_reader.as_deref_mut(),
                 };
 

@@ -13,14 +13,12 @@ pub mod rendering;
 pub mod audio;
 pub mod monitors;
 
-use protocol::ProtocolState;
-use monitors::MonitorManager;
+use crate::wayland::monitors::manager::MonitorManager;
 use audio::fifo::FifoReader;
 use types::WaylandConfig;
 use traits::WaylandSurface as WaylandSurfaceTrait;
 
 pub struct WaylandManager {
-    protocol_state: ProtocolState,
     monitor_manager: MonitorManager,
     config: WaylandConfig,
 }
@@ -28,7 +26,6 @@ pub struct WaylandManager {
 impl WaylandManager {
     pub fn new(config: WaylandConfig) -> Self {
         Self {
-            protocol_state: ProtocolState::new(),
             monitor_manager: MonitorManager::new(),
             config,
         }
@@ -58,6 +55,7 @@ impl WaylandManager {
             .as_ref()
             .ok_or_else(|| anyhow!("Layer shell not available"))?;
 
+        let mut total_surfaces = 0;
         for output_info in app_state.outputs.values() {
             if let Some(_name) = &output_info.name {
                 self.monitor_manager.create_surface(
@@ -70,16 +68,16 @@ impl WaylandManager {
                     &qh,
                     self.config.fps,
                 )?;
-                self.protocol_state.total_surfaces += 1;
+                total_surfaces += 1;
             }
         }
 
         event_queue.roundtrip(&mut app_state)?;
-        while app_state.configured_count < app_state.total_surfaces {
+        while app_state.configured_count < total_surfaces {
             tracing::debug!(
                 event = "waiting_layer_config",
                 configured = app_state.configured_count,
-                total = app_state.total_surfaces,
+                total = total_surfaces,
                 "Awaiting layer surface configuration"
             );
             event_queue.blocking_dispatch(&mut app_state)?;
@@ -110,7 +108,7 @@ pub fn init(
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
     mute: bool,
-    sharpening: f32,
+    _sharpening: f32,
 ) -> Result<()> {
     tracing::info!(
         event = "wayland_init",
@@ -118,16 +116,12 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        sharpening,
         "Initializing Wayland stack with lossless scaling"
     );
 
     let config = WaylandConfig {
         fps,
         layer_name: layer_name.map(String::from),
-        fifo_path: fifo_path.map(String::from),
-        mute,
-        sharpening,
     };
 
     let conn = Connection::connect_to_env()?;

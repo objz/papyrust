@@ -420,6 +420,7 @@ impl MediaRenderer {
         }
         Ok(())
     }
+    
     fn set_uniforms(&self, shader_program: u32, context: &mut RenderContext) -> Result<()> {
         unsafe {
             let time_loc = gl::GetUniformLocation(shader_program, b"time\0".as_ptr() as *const i8);
@@ -474,25 +475,5 @@ impl Drop for MediaRenderer {
                 gl::DeleteBuffers(1, &self.ebo);
             }
         }
-    }
-}
-
-impl crate::wayland::traits::MediaRenderer for MediaRenderer {
-    fn update_media(&mut self, media_type: MediaType, fps: u16) -> Result<()> {
-        self.update_media(media_type, fps)
-    }
-
-    fn draw(&mut self, context: &RenderContext) -> Result<()> {
-        let mut mutable_context = RenderContext {
-            width: context.width,
-            height: context.height,
-            transform: context.transform,
-            fifo_reader: None,
-        };
-        self.draw(&mut mutable_context)
-    }
-
-    fn has_new_frame(&self) -> bool {
-        self.has_new_frame()
     }
 }
