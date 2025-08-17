@@ -1,10 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ffmpeg_next as ffmpeg;
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::gl_bindings as gl;
-use crate::lossless_scaling::{LosslessScaler, ScalingAlgorithm};
 
 pub struct VideoDecoder {
     decoder: ffmpeg::decoder::Video,
@@ -17,7 +15,6 @@ pub struct VideoDecoder {
     video_path: String,
     last_frame_updated: bool,
     time_base: f64,
-    video_start_time: f64,
     playback_start_time: f64,
     forced_fps: Option<f64>,
     current_frame: Option<ffmpeg::frame::Video>,
@@ -30,7 +27,6 @@ pub struct VideoDecoder {
     loop_count: u64,
     first_pts: Option<i64>,
     frame_count: u64,
-    _lossless_scaler: Option<Arc<LosslessScaler>>,
 }
 
 impl VideoDecoder {
@@ -39,29 +35,16 @@ impl VideoDecoder {
     }
 
     pub fn new_with_fps(path: &str, forced_fps: Option<f64>) -> Result<Self> {
-        Self::new_with_scaler(path, forced_fps, None)
+        Self::new_with_scaler(path, forced_fps)
     }
 
-    pub async fn new_with_lossless_scaling(
-        path: &str,
-        forced_fps: Option<f64>,
-        algorithm: ScalingAlgorithm,
-    ) -> Result<Self> {
-        let scaler = LosslessScaler::new(algorithm).await?;
-        Self::new_with_scaler(path, forced_fps, Some(Arc::new(scaler)))
-    }
-
-    fn new_with_scaler(
-        path: &str,
-        forced_fps: Option<f64>,
-        lossless_scaler: Option<Arc<LosslessScaler>>,
-    ) -> Result<Self> {
+    fn new_with_scaler(path: &str, forced_fps: Option<f64>) -> Result<Self> {
         let fps_msg = if let Some(fps) = forced_fps {
             format!("forced FPS: {:.1}", fps)
         } else {
             "original timing".to_string()
         };
-        tracing::info!(event = "video_open", path = %path, %fps_msg, has_lossless = lossless_scaler.is_some(), "Initializing video decoder");
+        tracing::info!(event = "video_open", path = %path, %fps_msg, "Initializing video decoder");
 
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
         let input_ctx = ffmpeg::format::input(&Path::new(path))
@@ -87,16 +70,6 @@ impl VideoDecoder {
             let tb = stream.time_base();
             tb.0 as f64 / tb.1 as f64
         };
-
-        let video_start_time = {
-            let start = stream.start_time();
-            if start != ffmpeg::ffi::AV_NOPTS_VALUE {
-                start as f64 * time_base
-            } else {
-                0.0
-            }
-        };
-
         let video_duration = {
             let duration = stream.duration();
             if duration != ffmpeg::ffi::AV_NOPTS_VALUE {
@@ -136,7 +109,7 @@ impl VideoDecoder {
                 if (1.0..=120.0).contains(&tb_fps) {
                     tb_fps
                 } else {
-                    25.0 
+                    25.0
                 }
             } else {
                 25.0
@@ -221,7 +194,6 @@ impl VideoDecoder {
             video_path: path.to_string(),
             last_frame_updated: false,
             time_base,
-            video_start_time,
             playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
             forced_fps,
             current_frame: None,
@@ -234,7 +206,6 @@ impl VideoDecoder {
             loop_count: 0,
             first_pts: None,
             frame_count: 0,
-            _lossless_scaler: lossless_scaler,
         })
     }
 
@@ -435,28 +406,6 @@ impl VideoDecoder {
         self.decoder = context_decoder.decoder().video()?;
 
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn scale_frame_with_lossless(
-        &self,
-        frame_data: &[u8],
-        target_width: u32,
-        target_height: u32,
-        sharpening: f32,
-    ) -> Result<Vec<u8>> {
-        if let Some(ref scaler) = self._lossless_scaler {
-            scaler.scale_texture(
-                frame_data,
-                self._width,
-                self._height,
-                target_width,
-                target_height,
-                sharpening,
-            )
-        } else {
-            Ok(frame_data.to_vec())
-        }
     }
 
     pub fn texture(&self) -> u32 {

@@ -6,7 +6,6 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod ipc;
-mod lossless_scaling;
 mod media;
 mod utils;
 mod wayland; 
@@ -126,14 +125,6 @@ fn main() -> Result<()> {
 
     let init_media = media::MediaType::Shader("default".to_string());
 
-    let scaling_algorithm = match args.scaling {
-        ScalingMode::FSR => Some(lossless_scaling::ScalingAlgorithm::FSR),
-        ScalingMode::Lanczos => Some(lossless_scaling::ScalingAlgorithm::Lanczos),
-        ScalingMode::Mitchell => Some(lossless_scaling::ScalingAlgorithm::Mitchell),
-        ScalingMode::Bicubic => Some(lossless_scaling::ScalingAlgorithm::Bicubic),
-        ScalingMode::None => None,
-    };
-
     wayland::init(
         init_media,
         args.fps,
@@ -141,7 +132,6 @@ fn main() -> Result<()> {
         args.fifo.as_deref(),
         rx,
         args.mute,
-        scaling_algorithm,
         args.sharpening,
     )?;
 

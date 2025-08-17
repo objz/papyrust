@@ -52,7 +52,7 @@ impl MediaRenderer {
 
         let (shader_program, media_texture, video_decoder, media_width, media_height) =
             if media_type == MediaType::Shader("default".to_string()) {
-                let program = Self::default_shader()?;
+                let program = Self::create_default_shader()?;
                 (program, None, None, 0, 0)
             } else {
                 match &media_type {
@@ -181,29 +181,6 @@ impl MediaRenderer {
         }
     }
 
-    fn default_shader() -> Result<u32> {
-        let vert_source = r#"
-            #version 100
-            attribute highp vec2 datIn;
-            attribute highp vec2 texIn;
-            varying highp vec2 texCoords;
-            void main() {
-                texCoords = texIn;
-                gl_Position = vec4(datIn, 0.0, 1.0);
-            }
-        "#;
-
-        let frag_source = r#"
-            #ifdef GL_ES
-            precision mediump float;
-            #endif
-            void main() {
-                gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-            }
-        "#;
-
-        Self::compile(vert_source, frag_source)
-    }
 
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
         tracing::info!(
