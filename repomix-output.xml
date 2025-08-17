@@ -1658,559 +1658,10 @@ impl MediaHandler for ShaderHandler {
 }
 </file>
 
-<file path="src/bin/daemon/wayland/monitors/manager.rs">
-use std::collections::HashMap;
-use anyhow::Result;
-use khronos_egl as egl;
-use wayland_client::{Connection, QueueHandle};
-use wayland_client::protocol::wl_compositor;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
-use crate::media::MediaType;
-use crate::wayland::rendering::surface::WaylandSurface;
-use crate::wayland::types::{OutputInfo, RenderContext};
-use crate::wayland::protocol::events::AppState;
-use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
-use crate::wayland::audio::FifoReader;
-
-pub struct MonitorManager {
-    surfaces: HashMap<String, WaylandSurface>,
-    egl_instance: egl::Instance<egl::Static>,
-}
-
-impl MonitorManager {
-    pub fn new() -> Self {
-        Self {
-            surfaces: HashMap::new(),
-            egl_instance: egl::Instance::new(egl::Static),
-        }
-    }
-
-    pub fn create_surface(
-        &mut self,
-        output_info: &OutputInfo,
-        compositor: &wl_compositor::WlCompositor,
-        layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
-        layer_name: Option<&str>,
-        media_type: MediaType,
-        conn: &Connection,
-        qh: &QueueHandle<AppState>,
-        fps: u16,
-    ) -> Result<()> {
-        let surface = WaylandSurface::new(
-            output_info,
-            compositor,
-            layer_shell,
-            layer_name,
-            media_type,
-            &self.egl_instance,
-            conn,
-            qh,
-            fps,
-        )?;
-
-        let output_name = surface.get_output_name().to_string();
-        self.surfaces.insert(output_name, surface);
-        Ok(())
-    }
-
-    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut WaylandSurface> {
-        self.surfaces.values_mut()
-    }
-
-    pub fn update_media(&mut self, target_monitors: Option<&[String]>, media_type: MediaType, fps: u16) -> Result<()> {
-        match target_monitors {
-            None => {
-                tracing::info!(
-                    event = "media_update_all",
-                    ?media_type,
-                    monitors = self.surfaces.len(),
-                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
-                    "Updating media on all monitors"
-                );
-                for (monitor_name, surface) in &mut self.surfaces {
-                    tracing::debug!(
-                        event = "media_update_monitor",
-                        monitor = %monitor_name,
-                        "Applying media to monitor"
-                    );
-                    surface.renderer.update_media(media_type.clone(), fps)?;
-                }
-            }
-            Some(target_names) => {
-                tracing::info!(
-                    event = "media_update_targeted",
-                    targets = ?target_names,
-                    ?media_type,
-                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
-                    "Updating media on specific monitors"
-                );
-                
-                let mut found_monitors = Vec::new();
-                let mut missing_monitors = Vec::new();
-                
-                for target_name in target_names {
-                    if let Some(surface) = self.surfaces.get_mut(target_name) {
-                        tracing::debug!(
-                            event = "media_update_monitor",
-                            monitor = %target_name,
-                            "Applying media to target monitor"
-                        );
-                        surface.renderer.update_media(media_type.clone(), fps)?;
-                        found_monitors.push(target_name);
-                    } else {
-                        missing_monitors.push(target_name);
-                    }
-                }
-                
-                if !missing_monitors.is_empty() {
-                    tracing::warn!(
-                        event = "monitors_not_found",
-                        missing = ?missing_monitors,
-                        found = ?found_monitors,
-                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
-                        "Some target monitors were not found"
-                    );
-                }
-                
-                if found_monitors.is_empty() {
-                    tracing::error!(
-                        event = "no_monitors_updated",
-                        targets = ?target_names,
-                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
-                        "No target monitors were found - no media was updated"
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn set_swap_intervals(&self, has_video: bool, fps: u16) -> Result<()> {
-        for surface in self.surfaces.values() {
-            if has_video {
-                self.egl_instance.swap_interval(surface.egl_resources.display, 1)?;
-            } else {
-                let interval = if fps == 0 { 1 } else { 0 };
-                self.egl_instance.swap_interval(surface.egl_resources.display, interval)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>) -> Result<bool> {
-        let mut any_updated = false;
-        
-        let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
-        
-        for surface_name in surface_names {
-            if let Some(surface) = self.surfaces.get_mut(&surface_name) {
-                self.egl_instance.make_current(
-                    surface.egl_resources.display,
-                    Some(surface.egl_resources.surface),
-                    Some(surface.egl_resources.surface),
-                    Some(surface.egl_resources.context),
-                )?;
-
-                if surface.renderer.has_new_frame() {
-                    any_updated = true;
-                }
-
-                let mut surface_context = RenderContext {
-                    width: surface.current_width as i32,
-                    height: surface.current_height as i32,
-                    fifo_reader: fifo_reader.as_deref_mut(),
-                };
-
-                surface.renderer.draw(&mut surface_context)?;
-                
-                self.egl_instance.swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
-                
-                tracing::trace!(
-                    event = "surface_rendered",
-                    monitor = %surface_name,
-                    width = surface.current_width,
-                    height = surface.current_height,
-                    "Successfully rendered frame"
-                );
-            }
-        }
-        
-        Ok(any_updated)
-    }
-
-    pub fn len(&self) -> usize {
-        self.surfaces.len()
-    }
-}
-</file>
-
 <file path="src/bin/daemon/wayland/monitors/mod.rs">
 pub mod manager;
 
 pub use manager::MonitorManager;
-</file>
-
-<file path="src/bin/daemon/wayland/rendering/renderer.rs">
-use crate::gl_bindings as gl;
-use crate::media::{ImageHandler, MediaHandler, MediaType, ShaderHandler, VideoHandler};
-use crate::utils;
-use crate::wayland::types::RenderContext;
-use anyhow::Result;
-use std::ffi::CString;
-
-pub enum MediaObject {
-    Shader(ShaderHandler),
-    Image(ImageHandler),
-    Video(VideoHandler),
-}
-
-impl MediaObject {
-    fn as_handler(&self) -> &dyn MediaHandler {
-        match self {
-            MediaObject::Shader(h) => h,
-            MediaObject::Image(h) => h,
-            MediaObject::Video(h) => h,
-        }
-    }
-
-    fn as_handler_mut(&mut self) -> &mut dyn MediaHandler {
-        match self {
-            MediaObject::Shader(h) => h,
-            MediaObject::Image(h) => h,
-            MediaObject::Video(h) => h,
-        }
-    }
-}
-
-pub struct MediaRenderer {
-    media_object: Option<MediaObject>,
-    pending_media_type: Option<(MediaType, u16)>,
-    vbo: u32,
-    ebo: u32,
-    vao: u32,
-    start_time: u64,
-    needs_resource_refresh: bool,
-}
-
-impl MediaRenderer {
-    pub fn new(media_type: MediaType, fps: u16) -> Result<Self> {
-        tracing::info!(
-            event = "renderer_create",
-            ?media_type,
-            fps,
-            "Creating MediaRenderer"
-        );
-
-        let start_time = utils::get_time_millis();
-        Self::initialize_gl()?;
-        let (vbo, ebo, vao) = Self::setup_geometry()?;
-
-        Ok(Self {
-            media_object: None,
-            pending_media_type: Some((media_type, fps)),
-            vbo,
-            ebo,
-            vao,
-            start_time,
-            needs_resource_refresh: false,
-        })
-    }
-
-    fn initialize_gl() -> Result<()> {
-        unsafe {
-            gl::load_with(|s| {
-                let c_str = CString::new(s).unwrap();
-                let proc_addr = match std::ffi::CStr::from_bytes_with_nul(b"eglGetProcAddress\0") {
-                    Ok(name) => libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()),
-                    Err(_) => std::ptr::null_mut(),
-                };
-                if proc_addr.is_null() {
-                    std::ptr::null()
-                } else {
-                    let get_proc_addr: extern "C" fn(*const i8) -> *const std::ffi::c_void =
-                        std::mem::transmute(proc_addr);
-                    get_proc_addr(c_str.as_ptr())
-                }
-            });
-            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
-        }
-        Ok(())
-    }
-
-    fn create_media_object(media_type: MediaType, fps: u16) -> Result<MediaObject> {
-        match media_type {
-            MediaType::Shader(path) => {
-                let shader_path = if path == "default" {
-                    None
-                } else {
-                    Some(path.as_str())
-                };
-                Ok(MediaObject::Shader(ShaderHandler::new(shader_path)?))
-            }
-            MediaType::Image { path, shader } => Ok(MediaObject::Image(ImageHandler::new(
-                &path,
-                shader.as_deref(),
-            )?)),
-            MediaType::Video { path, shader } => {
-                let forced_fps = if fps > 0 { Some(fps as f64) } else { None };
-                Ok(MediaObject::Video(VideoHandler::new(
-                    &path,
-                    shader.as_deref(),
-                    forced_fps,
-                )?))
-            }
-        }
-    }
-
-    pub fn has_new_frame(&self) -> bool {
-        self.media_object
-            .as_ref()
-            .map(|obj| obj.as_handler().has_new_frame())
-            .unwrap_or(false)
-    }
-
-    pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
-        tracing::info!(
-            event = "renderer_media_update",
-            ?new_media_type,
-            fps,
-            "Updating renderer media"
-        );
-
-        self.pending_media_type = Some((new_media_type, fps));
-        self.needs_resource_refresh = true;
-
-        Ok(())
-    }
-
-    fn ensure_resources(&mut self) -> Result<()> {
-        if let Some((media_type, fps)) = self.pending_media_type.take() {
-            self.media_object = Some(Self::create_media_object(media_type, fps)?);
-        }
-
-        if self.needs_resource_refresh {
-            unsafe {
-                if self.vao != 0 {
-                    gl::DeleteVertexArrays(1, &self.vao);
-                }
-                if self.vbo != 0 {
-                    gl::DeleteBuffers(1, &self.vbo);
-                }
-                if self.ebo != 0 {
-                    gl::DeleteBuffers(1, &self.ebo);
-                }
-            }
-
-            let (vbo, ebo, vao) = Self::setup_geometry()?;
-            self.vbo = vbo;
-            self.ebo = ebo;
-            self.vao = vao;
-            self.needs_resource_refresh = false;
-        }
-        Ok(())
-    }
-
-    fn setup_geometry() -> Result<(u32, u32, u32)> {
-        let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
-        ];
-
-        let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
-
-        unsafe {
-            let mut vao = 0;
-            gl::GenVertexArrays(1, &mut vao);
-            gl::BindVertexArray(vao);
-
-            let mut vbo = 0;
-            gl::GenBuffers(1, &mut vbo);
-            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-            gl::BufferData(
-                gl::ARRAY_BUFFER,
-                (vertices.len() * std::mem::size_of::<f32>()) as isize,
-                vertices.as_ptr() as *const _,
-                gl::STATIC_DRAW,
-            );
-
-            let mut ebo = 0;
-            gl::GenBuffers(1, &mut ebo);
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
-            gl::BufferData(
-                gl::ELEMENT_ARRAY_BUFFER,
-                (indices.len() * std::mem::size_of::<u32>()) as isize,
-                indices.as_ptr() as *const _,
-                gl::STATIC_DRAW,
-            );
-
-            gl::VertexAttribPointer(
-                0,
-                2,
-                gl::FLOAT,
-                gl::FALSE,
-                4 * std::mem::size_of::<f32>() as i32,
-                std::ptr::null(),
-            );
-            gl::EnableVertexAttribArray(0);
-
-            gl::VertexAttribPointer(
-                1,
-                2,
-                gl::FLOAT,
-                gl::FALSE,
-                4 * std::mem::size_of::<f32>() as i32,
-                (2 * std::mem::size_of::<f32>()) as *const _,
-            );
-            gl::EnableVertexAttribArray(1);
-
-            gl::BindVertexArray(0);
-
-            Ok((vbo, ebo, vao))
-        }
-    }
-
-    pub fn draw(&mut self, context: &mut RenderContext) -> Result<()> {
-        self.ensure_resources()?;
-
-        let Some(ref mut media_object) = self.media_object else {
-            return Ok(());
-        };
-
-        let _ = media_object.as_handler_mut().update()?;
-
-        let handler = media_object.as_handler();
-        let program = handler.get_shader_program();
-
-        unsafe {
-            program.use_program();
-
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-            gl::Viewport(0, 0, context.width, context.height);
-
-            let time_loc = program.get_uniform_location("time");
-            if time_loc != -1 {
-                let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
-                gl::Uniform1f(time_loc, time);
-            }
-
-            let resolution_loc = program.get_uniform_location("resolution");
-            if resolution_loc != -1 {
-                gl::Uniform2f(resolution_loc, context.width as f32, context.height as f32);
-            }
-
-            if let Some(ref mut reader) = context.fifo_reader {
-                let fifo_loc = program.get_uniform_location("fifo");
-                if fifo_loc != -1 {
-                    if let Ok(Some(sample)) = reader.read_sample() {
-                        let left_val = if !sample.left.is_empty() {
-                            sample.left[0] as f32
-                        } else {
-                            0.0
-                        };
-                        let right_val = if !sample.right.is_empty() {
-                            sample.right[0] as f32
-                        } else {
-                            0.0
-                        };
-                        gl::Uniform2f(fifo_loc, right_val, left_val);
-                    }
-                }
-            }
-
-            if let Some(texture) = handler.get_texture() {
-                gl::ActiveTexture(gl::TEXTURE0);
-                texture.bind();
-
-                let media_loc = program.get_uniform_location("u_media");
-                if media_loc != -1 {
-                    gl::Uniform1i(media_loc, 0);
-                }
-            }
-
-            let (media_width, media_height) = handler.get_dimensions();
-            self.update_geometry(context.width, context.height, media_width, media_height);
-
-            gl::BindVertexArray(self.vao);
-            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
-            gl::BindVertexArray(0);
-        }
-        Ok(())
-    }
-
-    fn update_geometry(&self, output_width: i32, output_height: i32, media_width: u32, media_height: u32) {
-        let output_w = output_width as f32;
-        let output_h = output_height as f32;
-        let media_w = media_width as f32;
-        let media_h = media_height as f32;
-
-        if media_w <= 0.0 || media_h <= 0.0 {
-            let verts: [f32; 16] = [
-                -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
-            ];
-
-            unsafe {
-                gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-                gl::BufferData(
-                    gl::ARRAY_BUFFER,
-                    (verts.len() * std::mem::size_of::<f32>()) as isize,
-                    verts.as_ptr() as *const _,
-                    gl::STATIC_DRAW,
-                );
-            }
-            return;
-        }
-
-        let media_aspect = media_w / media_h;
-        let output_aspect = output_w / output_h;
-
-        let (scale_x, scale_y) = if media_aspect > output_aspect {
-            let scale = output_h / media_h;
-            let scaled_width = media_w * scale;
-            let overflow = (scaled_width - output_w) / output_w;
-            (1.0 + overflow, 1.0)
-        } else {
-            let scale = output_w / media_w;
-            let scaled_height = media_h * scale;
-            let overflow = (scaled_height - output_h) / output_h;
-            (1.0, 1.0 + overflow)
-        };
-
-        let u_min = (1.0 - 1.0 / scale_x) * 0.5;
-        let u_max = 1.0 - u_min;
-        let v_min = (1.0 - 1.0 / scale_y) * 0.5;
-        let v_max = 1.0 - v_min;
-
-        let verts: [f32; 16] = [
-            -1.0, 1.0, u_min, v_min, -1.0, -1.0, u_min, v_max, 1.0, -1.0, u_max, v_max, 1.0, 1.0,
-            u_max, v_min,
-        ];
-
-        unsafe {
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-            gl::BufferData(
-                gl::ARRAY_BUFFER,
-                (verts.len() * std::mem::size_of::<f32>()) as isize,
-                verts.as_ptr() as *const _,
-                gl::STATIC_DRAW,
-            );
-        }
-    }
-}
-
-impl Drop for MediaRenderer {
-    fn drop(&mut self) {
-        unsafe {
-            if self.vao != 0 {
-                gl::DeleteVertexArrays(1, &self.vao);
-            }
-            if self.vbo != 0 {
-                gl::DeleteBuffers(1, &self.vbo);
-            }
-            if self.ebo != 0 {
-                gl::DeleteBuffers(1, &self.ebo);
-            }
-        }
-    }
-}
 </file>
 
 <file path="src/bin/daemon/wayland/rendering/surface.rs">
@@ -2478,9 +1929,25 @@ use anyhow::{Result, anyhow};
 use image as img_crate;
 use crate::gl_utils::GlTexture;
 use crate::media::{MediaHandler, BaseMediaHandler};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub struct ImageHandler {
     base: BaseMediaHandler,
+    loading_state: Arc<Mutex<LoadingState>>,
+    is_ready: bool,
+}
+
+#[derive(Debug)]
+enum LoadingState {
+    Loading,
+    DataReady {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    Ready,
+    Error(String),
 }
 
 impl ImageHandler {
@@ -2492,23 +1959,50 @@ impl ImageHandler {
             "Creating image handler"
         );
 
-        let mut base = BaseMediaHandler::new_with_shader(shader_path)?;
-        let texture = Self::load_texture(path)?;
-        base.dimensions = (texture.width, texture.height);
-        base.texture = Some(texture);
+        let base = BaseMediaHandler::new_with_shader(shader_path)?;
+        let loading_state = Arc::new(Mutex::new(LoadingState::Loading));
+        
+        // Start async loading
+        let path_clone = path.to_string();
+        let loading_state_clone = loading_state.clone();
+        
+        thread::spawn(move || {
+            match Self::load_image_data(&path_clone) {
+                Ok((width, height, data)) => {
+                    tracing::debug!(
+                        event = "image_data_loaded",
+                        width,
+                        height,
+                        path = %path_clone,
+                        "Image data loaded successfully"
+                    );
+                    if let Ok(mut state) = loading_state_clone.lock() {
+                        *state = LoadingState::DataReady { width, height, data };
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        event = "image_load_error",
+                        error = %e,
+                        path = %path_clone,
+                        "Failed to load image"
+                    );
+                    if let Ok(mut state) = loading_state_clone.lock() {
+                        *state = LoadingState::Error(e.to_string());
+                    }
+                }
+            }
+        });
 
-        tracing::debug!(
-            event = "image_loaded",
-            width = base.dimensions.0,
-            height = base.dimensions.1,
-            "Image loaded successfully"
-        );
-
-        Ok(Self { base })
+        Ok(Self { 
+            base,
+            loading_state,
+            is_ready: false,
+        })
     }
 
-    fn load_texture(path: &str) -> Result<GlTexture> {
-        tracing::info!(event = "texture_load", path = %path, "Loading texture");
+    fn load_image_data(path: &str) -> Result<(u32, u32, Vec<u8>)> {
+        tracing::info!(event = "texture_load", path = %path, "Loading image data");
 
         let img = img_crate::open(path)
             .map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
@@ -2517,7 +2011,65 @@ impl ImageHandler {
 
         tracing::debug!(event = "image_info", width, height, "Image decoded");
 
-        GlTexture::from_rgba_data(width, height, &rgba, true)
+        Ok((width, height, rgba.into_raw()))
+    }
+
+    fn check_loading_state(&mut self) -> bool {
+        if self.is_ready {
+            return false;
+        }
+
+        if let Ok(mut state) = self.loading_state.lock() {
+            match std::mem::replace(&mut *state, LoadingState::Loading) {
+                LoadingState::Loading => {
+                    *state = LoadingState::Loading;
+                    false
+                }
+                LoadingState::DataReady { width, height, data } => {
+                    // Create texture on the main thread (with OpenGL context)
+                    match GlTexture::from_rgba_data(width, height, &data, true) {
+                        Ok(texture) => {
+                            self.base.dimensions = (texture.width, texture.height);
+                            self.base.texture = Some(texture);
+                            self.base.has_new_frame = true;
+                            self.is_ready = true;
+                            *state = LoadingState::Ready;
+                            
+                            tracing::debug!(
+                                event = "texture_created",
+                                width,
+                                height,
+                                "Texture created successfully, image is ready"
+                            );
+                            true
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                event = "texture_create_error",
+                                error = %e,
+                                "Failed to create texture from loaded data"
+                            );
+                            *state = LoadingState::Error(e.to_string());
+                            false
+                        }
+                    }
+                }
+                LoadingState::Ready => {
+                    *state = LoadingState::Ready;
+                    false
+                }
+                LoadingState::Error(e) => {
+                    *state = LoadingState::Error(e);
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.is_ready
     }
 }
 
@@ -2531,11 +2083,16 @@ impl MediaHandler for ImageHandler {
     }
 
     fn update(&mut self) -> Result<bool> {
+        let loaded = self.check_loading_state();
+        if loaded && self.base.has_new_frame {
+            self.base.has_new_frame = false;
+            return Ok(true);
+        }
         Ok(false)
     }
 
     fn has_new_frame(&self) -> bool {
-        false 
+        self.base.has_new_frame
     }
 
     fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
@@ -2929,6 +2486,627 @@ impl MediaHandler for VideoHandler {
 
     fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
         &self.base.shader_program
+    }
+}
+</file>
+
+<file path="src/bin/daemon/wayland/monitors/manager.rs">
+use crate::media::MediaType;
+use crate::wayland::audio::FifoReader;
+use crate::wayland::protocol::events::AppState;
+use crate::wayland::rendering::surface::WaylandSurface;
+use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
+use crate::wayland::types::{OutputInfo, RenderContext};
+use anyhow::Result;
+use khronos_egl as egl;
+use std::collections::HashMap;
+use wayland_client::protocol::wl_compositor;
+use wayland_client::{Connection, QueueHandle};
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
+
+pub struct MonitorManager {
+    surfaces: HashMap<String, WaylandSurface>,
+    egl_instance: egl::Instance<egl::Static>,
+}
+
+impl MonitorManager {
+    pub fn new() -> Self {
+        Self {
+            surfaces: HashMap::new(),
+            egl_instance: egl::Instance::new(egl::Static),
+        }
+    }
+
+    pub fn create_surface(
+        &mut self,
+        output_info: &OutputInfo,
+        compositor: &wl_compositor::WlCompositor,
+        layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
+        layer_name: Option<&str>,
+        media_type: MediaType,
+        conn: &Connection,
+        qh: &QueueHandle<AppState>,
+        fps: u16,
+    ) -> Result<()> {
+        let surface = WaylandSurface::new(
+            output_info,
+            compositor,
+            layer_shell,
+            layer_name,
+            media_type,
+            &self.egl_instance,
+            conn,
+            qh,
+            fps,
+        )?;
+
+        let output_name = surface.get_output_name().to_string();
+        self.surfaces.insert(output_name, surface);
+        Ok(())
+    }
+
+    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut WaylandSurface> {
+        self.surfaces.values_mut()
+    }
+
+    pub fn update_media(
+        &mut self,
+        target_monitors: Option<&[String]>,
+        media_type: MediaType,
+        fps: u16,
+    ) -> Result<()> {
+        match target_monitors {
+            None => {
+                tracing::info!(
+                    event = "media_update_all",
+                    ?media_type,
+                    monitors = self.surfaces.len(),
+                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
+                    "Updating media on all monitors"
+                );
+                for (monitor_name, surface) in &mut self.surfaces {
+                    tracing::debug!(
+                        event = "media_update_monitor",
+                        monitor = %monitor_name,
+                        "Applying media to monitor"
+                    );
+                    surface.renderer.update_media(media_type.clone(), fps)?;
+                }
+            }
+            Some(target_names) => {
+                tracing::info!(
+                    event = "media_update_targeted",
+                    targets = ?target_names,
+                    ?media_type,
+                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
+                    "Updating media on specific monitors"
+                );
+
+                let mut found_monitors = Vec::new();
+                let mut missing_monitors = Vec::new();
+
+                for target_name in target_names {
+                    if let Some(surface) = self.surfaces.get_mut(target_name) {
+                        tracing::debug!(
+                            event = "media_update_monitor",
+                            monitor = %target_name,
+                            "Applying media to target monitor"
+                        );
+                        surface.renderer.update_media(media_type.clone(), fps)?;
+                        found_monitors.push(target_name);
+                    } else {
+                        missing_monitors.push(target_name);
+                    }
+                }
+
+                if !missing_monitors.is_empty() {
+                    tracing::warn!(
+                        event = "monitors_not_found",
+                        missing = ?missing_monitors,
+                        found = ?found_monitors,
+                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
+                        "Some target monitors were not found"
+                    );
+                }
+
+                if found_monitors.is_empty() {
+                    tracing::error!(
+                        event = "no_monitors_updated",
+                        targets = ?target_names,
+                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
+                        "No target monitors were found - no media was updated"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_swap_intervals(&self, has_video: bool, fps: u16) -> Result<()> {
+        for surface in self.surfaces.values() {
+            let interval = match (has_video, fps) {
+                (true, _) => 1,                         // Video content always uses vsync
+                (false, 0) => 0,                        // Unlimited FPS for shaders when fps=0
+                (false, fps_val) if fps_val >= 60 => 1, // Use vsync for high FPS
+                (false, _) => 0,                        // Lower FPS can run unlocked
+            };
+
+            self.egl_instance
+                .swap_interval(surface.egl_resources.display, interval)?;
+
+            tracing::debug!(
+                event = "swap_interval_set",
+                monitor = %surface.output_name,
+                interval,
+                has_video,
+                fps,
+                "Set swap interval for optimal performance"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>) -> Result<bool> {
+        let mut any_updated = false;
+
+        let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
+
+        for surface_name in surface_names {
+            if let Some(surface) = self.surfaces.get_mut(&surface_name) {
+                self.egl_instance.make_current(
+                    surface.egl_resources.display,
+                    Some(surface.egl_resources.surface),
+                    Some(surface.egl_resources.surface),
+                    Some(surface.egl_resources.context),
+                )?;
+
+                if surface.renderer.has_new_frame() {
+                    any_updated = true;
+                }
+
+                let mut surface_context = RenderContext {
+                    width: surface.current_width as i32,
+                    height: surface.current_height as i32,
+                    fifo_reader: fifo_reader.as_deref_mut(),
+                };
+
+                surface.renderer.draw(&mut surface_context)?;
+
+                self.egl_instance
+                    .swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
+
+                tracing::trace!(
+                    event = "surface_rendered",
+                    monitor = %surface_name,
+                    width = surface.current_width,
+                    height = surface.current_height,
+                    "Successfully rendered frame"
+                );
+            }
+        }
+
+        Ok(any_updated)
+    }
+
+    pub fn len(&self) -> usize {
+        self.surfaces.len()
+    }
+}
+</file>
+
+<file path="src/bin/daemon/wayland/rendering/renderer.rs">
+use crate::gl_bindings as gl;
+use crate::media::{ImageHandler, MediaHandler, MediaType, ShaderHandler, VideoHandler};
+use crate::utils;
+use crate::wayland::types::RenderContext;
+use anyhow::Result;
+use std::ffi::CString;
+
+pub enum MediaObject {
+    Shader(ShaderHandler),
+    Image(ImageHandler),
+    Video(VideoHandler),
+}
+
+impl MediaObject {
+    fn as_handler(&self) -> &dyn MediaHandler {
+        match self {
+            MediaObject::Shader(h) => h,
+            MediaObject::Image(h) => h,
+            MediaObject::Video(h) => h,
+        }
+    }
+
+    fn as_handler_mut(&mut self) -> &mut dyn MediaHandler {
+        match self {
+            MediaObject::Shader(h) => h,
+            MediaObject::Image(h) => h,
+            MediaObject::Video(h) => h,
+        }
+    }
+}
+
+pub struct MediaRenderer {
+    media_object: Option<MediaObject>,
+    pending_media_type: Option<(MediaType, u16)>,
+    vbo: u32,
+    ebo: u32,
+    vao: u32,
+    start_time: u64,
+    needs_resource_refresh: bool,
+}
+
+impl MediaRenderer {
+    pub fn new(media_type: MediaType, fps: u16) -> Result<Self> {
+        tracing::info!(
+            event = "renderer_create",
+            ?media_type,
+            fps,
+            "Creating MediaRenderer"
+        );
+
+        let start_time = utils::get_time_millis();
+        Self::initialize_gl()?;
+        let (vbo, ebo, vao) = Self::setup_geometry()?;
+
+        Ok(Self {
+            media_object: None,
+            pending_media_type: Some((media_type, fps)),
+            vbo,
+            ebo,
+            vao,
+            start_time,
+            needs_resource_refresh: false,
+        })
+    }
+
+    fn initialize_gl() -> Result<()> {
+        unsafe {
+            gl::load_with(|s| {
+                let c_str = CString::new(s).unwrap();
+                let proc_addr = match std::ffi::CStr::from_bytes_with_nul(b"eglGetProcAddress\0") {
+                    Ok(name) => libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()),
+                    Err(_) => std::ptr::null_mut(),
+                };
+                if proc_addr.is_null() {
+                    std::ptr::null()
+                } else {
+                    let get_proc_addr: extern "C" fn(*const i8) -> *const std::ffi::c_void =
+                        std::mem::transmute(proc_addr);
+                    get_proc_addr(c_str.as_ptr())
+                }
+            });
+            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+        }
+        Ok(())
+    }
+
+    fn create_media_object(media_type: MediaType, fps: u16) -> Result<MediaObject> {
+        match media_type {
+            MediaType::Shader(path) => {
+                let shader_path = if path == "default" {
+                    None
+                } else {
+                    Some(path.as_str())
+                };
+                Ok(MediaObject::Shader(ShaderHandler::new(shader_path)?))
+            }
+            MediaType::Image { path, shader } => Ok(MediaObject::Image(ImageHandler::new(
+                &path,
+                shader.as_deref(),
+            )?)),
+            MediaType::Video { path, shader } => {
+                let forced_fps = if fps > 0 { Some(fps as f64) } else { None };
+                Ok(MediaObject::Video(VideoHandler::new(
+                    &path,
+                    shader.as_deref(),
+                    forced_fps,
+                )?))
+            }
+        }
+    }
+
+    pub fn has_new_frame(&self) -> bool {
+        self.media_object
+            .as_ref()
+            .map(|obj| obj.as_handler().has_new_frame())
+            .unwrap_or(false)
+    }
+
+    pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
+        tracing::info!(
+            event = "renderer_media_update",
+            ?new_media_type,
+            fps,
+            "Updating renderer media"
+        );
+
+        match &new_media_type {
+            MediaType::Image { .. } => {
+                // For images, create the new handler but don't replace until ready
+                let new_media = Self::create_media_object(new_media_type, fps)?;
+                
+                if let MediaObject::Image(ref image_handler) = new_media {
+                    if image_handler.is_ready() {
+                        // Image is immediately ready, replace now
+                        self.media_object = Some(new_media);
+                        self.needs_resource_refresh = true;
+                    } else {
+                        // Image is loading, store as pending and keep current media
+                        self.pending_media_type = Some((new_media_type, fps));
+                        // Don't set needs_resource_refresh yet
+                    }
+                } else {
+                    self.media_object = Some(new_media);
+                    self.needs_resource_refresh = true;
+                }
+            }
+            _ => {
+                // For non-image media, replace immediately
+                self.media_object = Some(Self::create_media_object(new_media_type, fps)?);
+                self.needs_resource_refresh = true;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ensure_resources(&mut self) -> Result<()> {
+        // Check if we have a pending image that's now ready
+        if let Some((media_type, fps)) = &self.pending_media_type {
+            if let MediaType::Image { .. } = media_type {
+                let new_media = Self::create_media_object(media_type.clone(), *fps)?;
+                if let MediaObject::Image(ref image_handler) = new_media {
+                    if image_handler.is_ready() {
+                        // Image is now ready, replace the current media
+                        self.media_object = Some(new_media);
+                        self.pending_media_type = None;
+                        self.needs_resource_refresh = true;
+                        
+                        tracing::info!(
+                            event = "pending_image_ready",
+                            "Pending image is ready, switching background"
+                        );
+                    }
+                } else {
+                    // Shouldn't happen, but handle gracefully
+                    self.pending_media_type = None;
+                }
+            } else {
+                // Non-image pending media, process normally
+                self.media_object = Some(Self::create_media_object(media_type.clone(), *fps)?);
+                self.pending_media_type = None;
+                self.needs_resource_refresh = true;
+            }
+        }
+
+        if self.needs_resource_refresh {
+            unsafe {
+                if self.vao != 0 {
+                    gl::DeleteVertexArrays(1, &self.vao);
+                }
+                if self.vbo != 0 {
+                    gl::DeleteBuffers(1, &self.vbo);
+                }
+                if self.ebo != 0 {
+                    gl::DeleteBuffers(1, &self.ebo);
+                }
+            }
+
+            let (vbo, ebo, vao) = Self::setup_geometry()?;
+            self.vbo = vbo;
+            self.ebo = ebo;
+            self.vao = vao;
+            self.needs_resource_refresh = false;
+        }
+        Ok(())
+    }
+    fn setup_geometry() -> Result<(u32, u32, u32)> {
+        let vertices: [f32; 16] = [
+            -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+        ];
+
+        let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
+
+        unsafe {
+            let mut vao = 0;
+            gl::GenVertexArrays(1, &mut vao);
+            gl::BindVertexArray(vao);
+
+            let mut vbo = 0;
+            gl::GenBuffers(1, &mut vbo);
+            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (vertices.len() * std::mem::size_of::<f32>()) as isize,
+                vertices.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+
+            let mut ebo = 0;
+            gl::GenBuffers(1, &mut ebo);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
+            gl::BufferData(
+                gl::ELEMENT_ARRAY_BUFFER,
+                (indices.len() * std::mem::size_of::<u32>()) as isize,
+                indices.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+
+            gl::VertexAttribPointer(
+                0,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                4 * std::mem::size_of::<f32>() as i32,
+                std::ptr::null(),
+            );
+            gl::EnableVertexAttribArray(0);
+
+            gl::VertexAttribPointer(
+                1,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                4 * std::mem::size_of::<f32>() as i32,
+                (2 * std::mem::size_of::<f32>()) as *const _,
+            );
+            gl::EnableVertexAttribArray(1);
+
+            gl::BindVertexArray(0);
+
+            Ok((vbo, ebo, vao))
+        }
+    }
+
+    pub fn draw(&mut self, context: &mut RenderContext) -> Result<()> {
+        self.ensure_resources()?;
+
+        let Some(ref mut media_object) = self.media_object else {
+            return Ok(());
+        };
+
+        let _ = media_object.as_handler_mut().update()?;
+
+        let handler = media_object.as_handler();
+        let program = handler.get_shader_program();
+
+        unsafe {
+            program.use_program();
+
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+            gl::Viewport(0, 0, context.width, context.height);
+
+            let time_loc = program.get_uniform_location("time");
+            if time_loc != -1 {
+                let raw_time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
+                let time = raw_time % 3600.0;
+                gl::Uniform1f(time_loc, time);
+            }
+
+            let resolution_loc = program.get_uniform_location("resolution");
+            if resolution_loc != -1 {
+                gl::Uniform2f(resolution_loc, context.width as f32, context.height as f32);
+            }
+
+            if let Some(ref mut reader) = context.fifo_reader {
+                let fifo_loc = program.get_uniform_location("fifo");
+                if fifo_loc != -1 {
+                    if let Ok(Some(sample)) = reader.read_sample() {
+                        let left_val = if !sample.left.is_empty() {
+                            sample.left[0] as f32
+                        } else {
+                            0.0
+                        };
+                        let right_val = if !sample.right.is_empty() {
+                            sample.right[0] as f32
+                        } else {
+                            0.0
+                        };
+                        gl::Uniform2f(fifo_loc, right_val, left_val);
+                    }
+                }
+            }
+
+            if let Some(texture) = handler.get_texture() {
+                gl::ActiveTexture(gl::TEXTURE0);
+                texture.bind();
+
+                let media_loc = program.get_uniform_location("u_media");
+                if media_loc != -1 {
+                    gl::Uniform1i(media_loc, 0);
+                }
+            }
+
+            let (media_width, media_height) = handler.get_dimensions();
+            self.update_geometry(context.width, context.height, media_width, media_height);
+
+            gl::BindVertexArray(self.vao);
+            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
+            gl::BindVertexArray(0);
+        }
+        Ok(())
+    }
+
+    fn update_geometry(
+        &self,
+        output_width: i32,
+        output_height: i32,
+        media_width: u32,
+        media_height: u32,
+    ) {
+        let output_w = output_width as f32;
+        let output_h = output_height as f32;
+        let media_w = media_width as f32;
+        let media_h = media_height as f32;
+
+        if media_w <= 0.0 || media_h <= 0.0 {
+            let verts: [f32; 16] = [
+                -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+            ];
+
+            unsafe {
+                gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    (verts.len() * std::mem::size_of::<f32>()) as isize,
+                    verts.as_ptr() as *const _,
+                    gl::STATIC_DRAW,
+                );
+            }
+            return;
+        }
+
+        let media_aspect = media_w / media_h;
+        let output_aspect = output_w / output_h;
+
+        let (scale_x, scale_y) = if media_aspect > output_aspect {
+            let scale = output_h / media_h;
+            let scaled_width = media_w * scale;
+            let overflow = (scaled_width - output_w) / output_w;
+            (1.0 + overflow, 1.0)
+        } else {
+            let scale = output_w / media_w;
+            let scaled_height = media_h * scale;
+            let overflow = (scaled_height - output_h) / output_h;
+            (1.0, 1.0 + overflow)
+        };
+
+        let u_min = (1.0 - 1.0 / scale_x) * 0.5;
+        let u_max = 1.0 - u_min;
+        let v_min = (1.0 - 1.0 / scale_y) * 0.5;
+        let v_max = 1.0 - v_min;
+
+        let verts: [f32; 16] = [
+            -1.0, 1.0, u_min, v_min, -1.0, -1.0, u_min, v_max, 1.0, -1.0, u_max, v_max, 1.0, 1.0,
+            u_max, v_min,
+        ];
+
+        unsafe {
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (verts.len() * std::mem::size_of::<f32>()) as isize,
+                verts.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+        }
+    }
+}
+
+impl Drop for MediaRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            if self.vao != 0 {
+                gl::DeleteVertexArrays(1, &self.vao);
+            }
+            if self.vbo != 0 {
+                gl::DeleteBuffers(1, &self.vbo);
+            }
+            if self.ebo != 0 {
+                gl::DeleteBuffers(1, &self.ebo);
+            }
+        }
     }
 }
 </file>
@@ -3426,25 +3604,25 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
 </file>
 
 <file path="src/bin/daemon/wayland/mod.rs">
-use crate::utils;
 use crate::ipc::MediaChange;
 use crate::media::MediaType;
+use crate::utils;
 use anyhow::{Result, anyhow};
 use std::process::Child;
 use std::sync::mpsc::Receiver;
 use wayland_client::Connection;
 
-pub mod traits;
-pub mod types;
-pub mod protocol;
-pub mod rendering;
 pub mod audio;
 pub mod monitors;
+pub mod protocol;
+pub mod rendering;
+pub mod traits;
+pub mod types;
 
-use monitors::MonitorManager;
 use audio::fifo::FifoReader;
-use types::WaylandConfig;
+use monitors::MonitorManager;
 use traits::WaylandSurface as WaylandSurfaceTrait;
+use types::WaylandConfig;
 
 struct WaylandManager {
     monitor_manager: MonitorManager,
@@ -3463,7 +3641,7 @@ impl WaylandManager {
         let mut event_queue = conn.new_event_queue();
         let qh = event_queue.handle();
         let mut app_state = protocol::events::AppState::new();
-        
+
         let _registry = conn.display().get_registry(&qh, ());
         event_queue.roundtrip(&mut app_state)?;
 
@@ -3512,9 +3690,10 @@ impl WaylandManager {
         }
         event_queue.roundtrip(&mut app_state)?;
 
-        // Apply initial configurations
         for surface in self.monitor_manager.surfaces_mut() {
-            if let Some((width, height)) = app_state.layer_surface_configs.get(&surface.surface_id.0) {
+            if let Some((width, height)) =
+                app_state.layer_surface_configs.get(&surface.surface_id.0)
+            {
                 tracing::info!(
                     event = "surface_configured",
                     output = %surface.output_name,
@@ -3536,7 +3715,6 @@ pub fn init(
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
     mute: bool,
-    _sharpening: f32,
 ) -> Result<()> {
     tracing::info!(
         event = "wayland_init",
@@ -3558,8 +3736,11 @@ pub fn init(
 
     let mut fifo_reader = fifo_path.map(FifoReader::new).transpose()?;
     let mut has_video = matches!(media_type, MediaType::Video { .. });
-    
-    wayland_manager.monitor_manager.set_swap_intervals(has_video, fps)?;
+    let mut current_media_type = media_type.clone();
+
+    wayland_manager
+        .monitor_manager
+        .set_swap_intervals(has_video, fps)?;
 
     tracing::info!(
         event = "render_loop_start",
@@ -3572,17 +3753,18 @@ pub fn init(
     let mut frame_count = 0u64;
     let mut last_fps_check = utils::get_time_millis();
 
-    let target_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 };
+    let base_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 };
 
     loop {
         let frame_start = utils::get_time_millis();
 
-        // Handle IPC messages
         if let Ok(media_change) = ipc_receiver.try_recv() {
             let new_has_video = matches!(media_change.media_type, MediaType::Video { .. });
             if has_video != new_has_video {
                 has_video = new_has_video;
-                wayland_manager.monitor_manager.set_swap_intervals(has_video, fps)?;
+                wayland_manager
+                    .monitor_manager
+                    .set_swap_intervals(has_video, fps)?;
                 tracing::info!(
                     event = "swap_interval_reconfigured",
                     has_video,
@@ -3590,7 +3772,8 @@ pub fn init(
                 );
             }
 
-            // Handle audio for video files
+            current_media_type = media_change.media_type.clone();
+
             if let MediaType::Video { path, .. } = &media_change.media_type {
                 let effective_mute = mute || media_change.mute;
 
@@ -3607,7 +3790,7 @@ pub fn init(
                     match std::process::Command::new("ffplay")
                         .args(&[
                             "-nodisp",
-                            "-autoexit", 
+                            "-autoexit",
                             "-hide_banner",
                             "-loglevel",
                             "error",
@@ -3649,31 +3832,53 @@ pub fn init(
             )?;
         }
 
-        // Render all surfaces
-        let any_video_updated = wayland_manager.monitor_manager.render_all(fifo_reader.as_mut())?;
+        let any_video_updated = wayland_manager
+            .monitor_manager
+            .render_all(fifo_reader.as_mut())?;
 
         frame_count += 1;
 
-        // Frame timing
         let elapsed = utils::get_time_millis() - frame_start;
-        let target_time = if has_video {
-            if fps == 0 {
-                if any_video_updated { 16 } else { 33 }
-            } else {
-                target_frame_time
+        let target_time = match &current_media_type {
+            MediaType::Shader(_) => {
+                if fps == 0 {
+                    16
+                } else {
+                    base_frame_time
+                }
             }
-        } else {
-            if any_video_updated { target_frame_time } else { target_frame_time * 2 }
+            MediaType::Video { .. } => {
+                if fps == 0 {
+                    if any_video_updated { 16 } else { 33 }
+                } else {
+                    base_frame_time
+                }
+            }
+            MediaType::Image { .. } => {
+                if any_video_updated {
+                    base_frame_time
+                } else {
+                    base_frame_time * 2
+                }
+            }
         };
-        
+
         if elapsed < target_time {
             utils::sleep_millis(target_time - elapsed);
         }
 
-        // FPS tracking
         if frame_count % 300 == 0 {
             let now = utils::get_time_millis();
-            let _fps_actual = 300000 / (now - last_fps_check + 1);
+            let actual_fps = 300000 / (now - last_fps_check + 1);
+            if actual_fps < (fps as u64 * 80 / 100) && fps > 0 {
+                tracing::warn!(
+                    event = "performance_degradation",
+                    expected_fps = fps,
+                    actual_fps,
+                    media_type = ?current_media_type,
+                    "Performance below expected threshold"
+                );
+            }
             last_fps_check = now;
         }
     }
@@ -3807,7 +4012,7 @@ struct Args {
     #[arg(short = 'F', long)]
     fork: bool,
 
-    #[arg(short, long, default_value = "60")]
+    #[arg(short, long, default_value = "0")]
     fps: u16,
 
     #[arg(short, long)]
@@ -3818,12 +4023,6 @@ struct Args {
 
     #[arg(long, alias = "no-audio")]
     mute: bool,
-
-    #[arg(short = 's', long, default_value = "fsr")]
-    scaling: ScalingMode,
-
-    #[arg(long, default_value = "0.3")]
-    sharpening: f32,
 }
 
 fn main() -> Result<()> {
@@ -3845,8 +4044,6 @@ fn main() -> Result<()> {
         layer = args.layer.as_ref().map(|l| l.to_string()),
         fifo = args.fifo.as_deref(),
         mute = args.mute,
-        scaling = ?args.scaling,
-        sharpening = args.sharpening,
         "Starting Papyrust daemon with unified resource management"
     );
 
@@ -3886,7 +4083,6 @@ fn main() -> Result<()> {
         args.fifo.as_deref(),
         rx,
         args.mute,
-        args.sharpening,
     )?;
 
     tracing::info!(event = "daemon_exit", "Papyrust daemon exited");
