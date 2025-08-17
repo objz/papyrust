@@ -46,11 +46,11 @@ shaders/
 src/
   bin/
     daemon/
-      shaders/
-        bicubic.wgsl
-        fsr.wgsl
-        lanczos.wgsl
-        mitchell.wgsl
+      media/
+        image.rs
+        mod.rs
+        shader.rs
+        video.rs
       wayland/
         fifo.rs
         mod.rs
@@ -58,9 +58,7 @@ src/
         renderer.rs
         state.rs
       ipc.rs
-      lossless_scaling.rs
       main.rs
-      media.rs
       utils.rs
     cli.rs
   ui/
@@ -133,183 +131,136 @@ void main() {
 }
 </file>
 
-<file path="src/bin/daemon/shaders/bicubic.wgsl">
-fn cubic(t: f32) -> f32 {
-    let a = -0.5;
-    let t2 = t * t;
-    let t3 = t2 * t;
-    
-    if t <= 1.0 {
-        return (a + 2.0) * t3 - (a + 3.0) * t2 + 1.0;
-    } else if t <= 2.0 {
-        return a * t3 - 5.0 * a * t2 + 8.0 * a * t - 4.0 * a;
-    } else {
-        return 0.0;
-    }
+<file path="src/bin/daemon/media/mod.rs">
+#[derive(Debug, Clone, PartialEq)]
+pub enum MediaType {
+    Shader(String),
+    Image {
+        path: String,
+        shader: Option<String>,
+    },
+    Video {
+        path: String,
+        shader: Option<String>,
+    },
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_coords = input.tex_coords;
-    let scaled_coords = tex_coords * uniforms.input_size;
-    let base_coords = floor(scaled_coords - 0.5) + 0.5;
-    let f = scaled_coords - base_coords;
-    
-    var result = vec4<f32>(0.0);
-    
-    for (var i = -1; i <= 2; i++) {
-        for (var j = -1; j <= 2; j++) {
-            let sample_coords = (base_coords + vec2<f32>(f32(i), f32(j))) / uniforms.input_size;
-            let weight_x = cubic(abs(f32(i) - f.x));
-            let weight_y = cubic(abs(f32(j) - f.y));
-            let weight = weight_x * weight_y;
-            
-            if sample_coords.x >= 0.0 && sample_coords.x <= 1.0 && 
-               sample_coords.y >= 0.0 && sample_coords.y <= 1.0 {
-                result += textureSample(input_texture, texture_sampler, sample_coords) * weight;
-            }
-        }
-    }
-    
-    return clamp(result, vec4<f32>(0.0), vec4<f32>(1.0));
-}
+pub mod image;
+pub mod shader;
+pub mod video;
+
+pub use image::load_texture;
+pub use shader::load_shader;
+pub use video::VideoDecoder;
 </file>
 
-<file path="src/bin/daemon/shaders/fsr.wgsl">
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_coords = input.tex_coords;
-    let texel_size = 1.0 / uniforms.input_size;
-    
-    let b = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(-texel_size.x, -texel_size.y));
-    let d = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(0.0, -texel_size.y));
-    let f = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(texel_size.x, -texel_size.y));
-    let h = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(-texel_size.x, 0.0));
-    let i = textureSample(input_texture, texture_sampler, tex_coords);
-    let j = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(texel_size.x, 0.0));
-    let l = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(-texel_size.x, texel_size.y));
-    let n = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(0.0, texel_size.y));
-    let p = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(texel_size.x, texel_size.y));
-    
-    let min_g = min(min(min(d.g, h.g), min(i.g, j.g)), n.g);
-    let max_g = max(max(max(d.g, h.g), max(i.g, j.g)), n.g);
-    
-    let w = 1.0 - saturate((max_g - min_g) / max(max_g, 1e-6));
-    
-    let dir_horizontal = abs(h.g + j.g - 2.0 * i.g);
-    let dir_vertical = abs(d.g + n.g - 2.0 * i.g);
-    
-    var result: vec4<f32>;
-    if dir_horizontal < dir_vertical {
-        result = mix(d, n, 0.5);
-    } else {
-        result = mix(h, j, 0.5);
-    }
-    
-    let sharpened = i + (i - result) * uniforms.sharpening * w;
-    
-    return mix(i, sharpened, w);
-}
-</file>
+<file path="src/bin/daemon/media/shader.rs">
+use anyhow::{anyhow, Result};
+use std::fs::File;
+use std::io::Read;
+use crate::utils::{compile_shader, vertex_shader, default_shader, prepare_shader_source};
 
-<file path="src/bin/daemon/shaders/lanczos.wgsl">
-fn lanczos(x: f32) -> f32 {
-    if abs(x) < 1e-6 {
-        return 1.0;
-    }
-    if abs(x) >= 3.0 {
-        return 0.0;
-    }
-    let pi_x = 3.14159265359 * x;
-    return 3.0 * sin(pi_x) * sin(pi_x / 3.0) / (pi_x * pi_x);
+pub trait MediaHandler {
+    fn get_texture(&self) -> Option<u32>;
+    fn get_dimensions(&self) -> (u32, u32);
+    fn update(&mut self) -> Result<bool>;
+    fn has_new_frame(&self) -> bool;
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_coords = input.tex_coords;
-    let scaled_coords = tex_coords * uniforms.input_size;
-    let base_coords = floor(scaled_coords - 0.5) + 0.5;
-    let f = scaled_coords - base_coords;
-    
-    var result = vec4<f32>(0.0);
-    var weight_sum = 0.0;
-    
-    for (var i = -2; i <= 3; i++) {
-        for (var j = -2; j <= 3; j++) {
-            let sample_coords = (base_coords + vec2<f32>(f32(i), f32(j))) / uniforms.input_size;
-            let weight_x = lanczos(f32(i) - f.x);
-            let weight_y = lanczos(f32(j) - f.y);
-            let weight = weight_x * weight_y;
-            
-            if sample_coords.x >= 0.0 && sample_coords.x <= 1.0 && 
-               sample_coords.y >= 0.0 && sample_coords.y <= 1.0 {
-                result += textureSample(input_texture, texture_sampler, sample_coords) * weight;
-                weight_sum += weight;
+pub struct ShaderHandler {
+    shader_program: u32,
+}
+
+impl ShaderHandler {
+    pub fn new(path: Option<&str>) -> Result<Self> {
+        tracing::info!(
+            event = "shader_create",
+            path = path.unwrap_or("default"),
+            "Creating shader handler"
+        );
+
+        let shader_program = if let Some(shader_path) = path {
+            if shader_path == "default" {
+                Self::create_default_shader()?
+            } else {
+                Self::create_pure_shader(shader_path)?
             }
+        } else {
+            Self::create_default_shader()?
+        };
+
+        Ok(Self { shader_program })
+    }
+
+    pub fn get_shader_program(&self) -> u32 {
+        self.shader_program
+    }
+
+    fn load_shader(path: &str) -> Result<String> {
+        let mut file = File::open(path)
+            .map_err(|e| anyhow!("Failed to open shader file {}: {}", path, e))?;
+        let mut source = String::new();
+        file.read_to_string(&mut source)
+            .map_err(|e| anyhow!("Failed to read shader file {}: {}", path, e))?;
+        Ok(source)
+    }
+
+    fn create_pure_shader(shader_path: &str) -> Result<u32> {
+        let raw = Self::load_shader(shader_path)?;
+        let frag_source = prepare_shader_source(&raw);
+        
+        let vert_source = r#"
+            #version 100
+            attribute highp vec2 datIn;
+            attribute highp vec2 texIn;
+            varying highp vec2 texCoords;
+            void main() {
+                texCoords = texIn;
+                gl_Position = vec4(datIn, 0.0, 1.0);
+            }
+        "#;
+        
+        compile_shader(vert_source, &frag_source)
+    }
+
+    fn create_default_shader() -> Result<u32> {
+        let vert_source = vertex_shader();
+        let frag_source = default_shader();
+        compile_shader(vert_source, frag_source)
+    }
+
+    pub fn create_media_shader(shader_path: &str) -> Result<u32> {
+        let raw = Self::load_shader(shader_path)?;
+        let frag_source = prepare_shader_source(&raw);
+        let vert_source = vertex_shader();
+        compile_shader(vert_source, &frag_source)
+    }
+}
+
+impl MediaHandler for ShaderHandler {
+    fn get_texture(&self) -> Option<u32> {
+        None
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        (0, 0)
+    }
+
+    fn update(&mut self) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn has_new_frame(&self) -> bool {
+        false
+    }
+}
+
+impl Drop for ShaderHandler {
+    fn drop(&mut self) {
+        unsafe {
+            crate::gl_bindings::DeleteProgram(self.shader_program);
         }
     }
-    
-    if weight_sum > 0.0 {
-        result /= weight_sum;
-    }
-    
-    let center = textureSample(input_texture, texture_sampler, tex_coords);
-    let sharpened = result + (result - center) * uniforms.sharpening;
-    
-    return clamp(sharpened, vec4<f32>(0.0), vec4<f32>(1.0));
-}
-</file>
-
-<file path="src/bin/daemon/shaders/mitchell.wgsl">
-fn mitchell(x: f32) -> f32 {
-    let b = 1.0 / 3.0;
-    let c = 1.0 / 3.0;
-    let ax = abs(x);
-    
-    if ax < 1.0 {
-        return ((12.0 - 9.0 * b - 6.0 * c) * ax * ax * ax + 
-                (-18.0 + 12.0 * b + 6.0 * c) * ax * ax + 
-                (6.0 - 2.0 * b)) / 6.0;
-    } else if ax < 2.0 {
-        return ((-b - 6.0 * c) * ax * ax * ax + 
-                (6.0 * b + 30.0 * c) * ax * ax + 
-                (-12.0 * b - 48.0 * c) * ax + 
-                (8.0 * b + 24.0 * c)) / 6.0;
-    } else {
-        return 0.0;
-    }
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_coords = input.tex_coords;
-    let scaled_coords = tex_coords * uniforms.input_size;
-    let base_coords = floor(scaled_coords - 0.5) + 0.5;
-    let f = scaled_coords - base_coords;
-    
-    var result = vec4<f32>(0.0);
-    var weight_sum = 0.0;
-    
-    for (var i = -1; i <= 2; i++) {
-        for (var j = -1; j <= 2; j++) {
-            let sample_coords = (base_coords + vec2<f32>(f32(i), f32(j))) / uniforms.input_size;
-            let weight_x = mitchell(f32(i) - f.x);
-            let weight_y = mitchell(f32(j) - f.y);
-            let weight = weight_x * weight_y;
-            
-            if sample_coords.x >= 0.0 && sample_coords.x <= 1.0 && 
-               sample_coords.y >= 0.0 && sample_coords.y <= 1.0 {
-                result += textureSample(input_texture, texture_sampler, sample_coords) * weight;
-                weight_sum += weight;
-            }
-        }
-    }
-    
-    if weight_sum > 0.0 {
-        result /= weight_sum;
-    }
-    
-    return clamp(result, vec4<f32>(0.0), vec4<f32>(1.0));
 }
 </file>
 
@@ -389,497 +340,6 @@ impl FifoReader {
         }
 
         Ok(Some(stereo))
-    }
-}
-</file>
-
-<file path="src/bin/daemon/lossless_scaling.rs">
-use anyhow::{Result, anyhow};
-use bytemuck::{Pod, Zeroable};
-use std::borrow::Cow;
-use wgpu::util::DeviceExt;
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-#[allow(dead_code)]
-struct Vertex {
-    position: [f32; 2],
-    tex_coords: [f32; 2],
-}
-
-impl Vertex {
-    #[allow(dead_code)]
-    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-            ],
-        }
-    }
-}
-
-#[allow(dead_code)]
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1.0, 1.0],
-        tex_coords: [0.0, 0.0],
-    },
-    Vertex {
-        position: [-1.0, -1.0],
-        tex_coords: [0.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, -1.0],
-        tex_coords: [1.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, 1.0],
-        tex_coords: [1.0, 0.0],
-    },
-];
-
-#[allow(dead_code)]
-const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
-
-#[derive(Debug, Clone, Copy)]
-pub enum ScalingAlgorithm {
-    FSR,
-    Lanczos,
-    Mitchell,
-    Bicubic,
-}
-
-#[allow(dead_code)]
-pub struct LosslessScaler {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    uniform_buffer: wgpu::Buffer,
-    algorithm: ScalingAlgorithm,
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-#[allow(dead_code)]
-struct ScalingUniforms {
-    input_size: [f32; 2],
-    output_size: [f32; 2],
-    scale_factor: f32,
-    algorithm_type: u32,
-    sharpening: f32,
-    _padding: f32,
-}
-
-impl LosslessScaler {
-    #[allow(dead_code)]
-    pub async fn new(algorithm: ScalingAlgorithm) -> Result<Self> {
-        tracing::info!(
-            event = "lossless_scaler_init",
-            ?algorithm,
-            "Initializing lossless scaler"
-        );
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .ok_or_else(|| anyhow!("Failed to find suitable adapter"))?;
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    label: None,
-                },
-                None,
-            )
-            .await
-            .map_err(|e| anyhow!("Failed to create device: {}", e))?;
-
-        let shader_source = Self::get_shader_source(algorithm);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Lossless Scaling Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&shader_source)),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-            label: Some("Lossless Scaling Bind Group Layout"),
-        });
-
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Lossless Scaling Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Lossless Scaling Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[Vertex::desc()],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Scaling Uniforms"),
-            size: std::mem::size_of::<ScalingUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        tracing::info!(
-            event = "lossless_scaler_ready",
-            ?algorithm,
-            "Lossless scaler initialized"
-        );
-
-        Ok(Self {
-            device,
-            queue,
-            render_pipeline,
-            vertex_buffer,
-            index_buffer,
-            bind_group_layout,
-            sampler,
-            uniform_buffer,
-            algorithm,
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn scale_texture(
-        &self,
-        input_data: &[u8],
-        input_width: u32,
-        input_height: u32,
-        output_width: u32,
-        output_height: u32,
-        sharpening: f32,
-    ) -> Result<Vec<u8>> {
-        let input_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Input Texture"),
-            size: wgpu::Extent3d {
-                width: input_width,
-                height: input_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &input_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            input_data,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * input_width),
-                rows_per_image: Some(input_height),
-            },
-            wgpu::Extent3d {
-                width: input_width,
-                height: input_height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Output Texture"),
-            size: wgpu::Extent3d {
-                width: output_width,
-                height: output_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-
-        let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let scale_factor = (output_width as f32 / input_width as f32)
-            .max(output_height as f32 / input_height as f32);
-
-        let uniforms = ScalingUniforms {
-            input_size: [input_width as f32, input_height as f32],
-            output_size: [output_width as f32, output_height as f32],
-            scale_factor,
-            algorithm_type: self.algorithm as u32,
-            sharpening,
-            _padding: 0.0,
-        };
-
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&input_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-            ],
-            label: Some("Scaling Bind Group"),
-        });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Scaling Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Scaling Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
-        }
-
-        let buffer_size = (output_width * output_height * 4) as u64;
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Buffer"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
-                texture: &output_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyBuffer {
-                buffer: &output_buffer,
-                layout: wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * output_width),
-                    rows_per_image: Some(output_height),
-                },
-            },
-            wgpu::Extent3d {
-                width: output_width,
-                height: output_height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        let buffer_slice = output_buffer.slice(..);
-        buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
-
-        let data = buffer_slice.get_mapped_range();
-        let result = data.to_vec();
-        drop(data);
-        output_buffer.unmap();
-
-        tracing::debug!(
-            event = "texture_scaled",
-            algorithm = ?self.algorithm,
-            input_size = format!("{}x{}", input_width, input_height),
-            output_size = format!("{}x{}", output_width, output_height),
-            scale_factor,
-            sharpening,
-            "Texture scaled with lossless algorithm"
-        );
-
-        Ok(result)
-    }
-
-    #[allow(dead_code)]
-    fn get_shader_source(algorithm: ScalingAlgorithm) -> String {
-        let algorithm_specific = match algorithm {
-            ScalingAlgorithm::FSR => include_str!("shaders/fsr.wgsl"),
-            ScalingAlgorithm::Lanczos => include_str!("shaders/lanczos.wgsl"),
-            ScalingAlgorithm::Mitchell => include_str!("shaders/mitchell.wgsl"),
-            ScalingAlgorithm::Bicubic => include_str!("shaders/bicubic.wgsl"),
-        };
-
-        format!(
-            r#"
-struct VertexInput {{
-    @location(0) position: vec2<f32>,
-    @location(1) tex_coords: vec2<f32>,
-}}
-
-struct VertexOutput {{
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) tex_coords: vec2<f32>,
-}}
-
-struct ScalingUniforms {{
-    input_size: vec2<f32>,
-    output_size: vec2<f32>,
-    scale_factor: f32,
-    algorithm_type: u32,
-    sharpening: f32,
-    _padding: f32,
-}}
-
-@group(0) @binding(0)
-var input_texture: texture_2d<f32>;
-
-@group(0) @binding(1)
-var texture_sampler: sampler;
-
-@group(0) @binding(2)
-var<uniform> uniforms: ScalingUniforms;
-
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {{
-    var output: VertexOutput;
-    output.clip_position = vec4<f32>(input.position, 0.0, 1.0);
-    output.tex_coords = input.tex_coords;
-    return output;
-}}
-
-{algorithm_specific}
-"#
-        )
     }
 }
 </file>
@@ -1282,6 +742,620 @@ fn main() {
 }
 </file>
 
+<file path="src/bin/daemon/media/image.rs">
+use anyhow::{Result, anyhow};
+use image as img_crate;
+use crate::gl_bindings as gl;
+use crate::media::shader::{MediaHandler, ShaderHandler};
+use crate::utils::{vertex_shader, default_shader, compile_shader};
+
+pub struct ImageHandler {
+    texture: u32,
+    width: u32,
+    height: u32,
+    shader_program: u32,
+}
+
+impl ImageHandler {
+    pub fn new(path: &str, shader_path: Option<&str>) -> Result<Self> {
+        tracing::info!(
+            event = "image_create",
+            path = %path,
+            shader = shader_path.unwrap_or("default"),
+            "Creating image handler"
+        );
+
+        let texture = Self::load_texture(path)?;
+        let img = img_crate::open(path)
+            .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
+        let (width, height) = (img.width(), img.height());
+
+        let shader_program = if let Some(shader_path) = shader_path {
+            ShaderHandler::create_media_shader(shader_path)?
+        } else {
+            Self::create_default_shader()?
+        };
+
+        tracing::debug!(
+            event = "image_loaded",
+            width,
+            height,
+            texture,
+            "Image loaded successfully"
+        );
+
+        Ok(Self {
+            texture,
+            width,
+            height,
+            shader_program,
+        })
+    }
+
+    pub fn get_shader_program(&self) -> u32 {
+        self.shader_program
+    }
+
+    fn load_texture(path: &str) -> Result<u32> {
+        tracing::info!(event = "texture_load", path = %path, "Loading texture");
+
+        let img = img_crate::open(path)
+            .map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
+        let rgba = img.to_rgba8();
+        let (width, height) = (img.width(), img.height());
+
+        tracing::debug!(event = "image_info", width, height, "Image decoded");
+
+        let mut texture = 0;
+        unsafe {
+            gl::GenTextures(1, &mut texture);
+            gl::BindTexture(gl::TEXTURE_2D, texture);
+
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
+
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MIN_FILTER,
+                gl::LINEAR_MIPMAP_LINEAR as i32,
+            );
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+
+            let mut max_anisotropy = 0.0f32;
+            gl::GetFloatv(0x84FE, &mut max_anisotropy);
+            if max_anisotropy > 1.0 {
+                let anisotropy = max_anisotropy.min(16.0);
+                gl::TexParameterf(gl::TEXTURE_2D, 0x84FE, anisotropy);
+                tracing::debug!(
+                    event = "anisotropic_filtering",
+                    anisotropy,
+                    "Applied anisotropic filtering"
+                );
+            }
+
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA as i32,
+                width as i32,
+                height as i32,
+                0,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                rgba.as_ptr() as *const _,
+            );
+
+            gl::GenerateMipmap(gl::TEXTURE_2D);
+
+            tracing::debug!(
+                event = "texture_created",
+                width,
+                height,
+                texture,
+                "High-quality texture created with mipmaps"
+            );
+        }
+
+        Ok(texture)
+    }
+
+    fn create_default_shader() -> Result<u32> {
+        let vert_source = vertex_shader();
+        let frag_source = default_shader();
+        compile_shader(vert_source, frag_source)
+    }
+}
+
+impl MediaHandler for ImageHandler {
+    fn get_texture(&self) -> Option<u32> {
+        Some(self.texture)
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn update(&mut self) -> Result<bool> {
+        Ok(false) // Images don't need updates
+    }
+
+    fn has_new_frame(&self) -> bool {
+        false // Images don't have frames
+    }
+}
+
+impl Drop for ImageHandler {
+    fn drop(&mut self) {
+        unsafe {
+            gl::DeleteTextures(1, &self.texture);
+            gl::DeleteProgram(self.shader_program);
+        }
+    }
+}
+</file>
+
+<file path="src/bin/daemon/media/video.rs">
+use anyhow::{Result, anyhow};
+use ffmpeg_next as ffmpeg;
+use std::path::Path;
+use crate::gl_bindings as gl;
+use crate::media::shader::{MediaHandler, ShaderHandler};
+use crate::utils::{vertex_shader, default_shader, compile_shader_program};
+
+pub struct VideoHandler {
+    decoder: ffmpeg::decoder::Video,
+    scaler: Option<ffmpeg::software::scaling::Context>,
+    texture: u32,
+    width: u32,
+    height: u32,
+    input_ctx: ffmpeg::format::context::Input,
+    stream_index: usize,
+    video_path: String,
+    last_frame_updated: bool,
+    time_base: f64,
+    playback_start_time: f64,
+    forced_fps: Option<f64>,
+    current_frame: Option<ffmpeg::frame::Video>,
+    next_frame: Option<ffmpeg::frame::Video>,
+    current_frame_pts: Option<i64>,
+    next_frame_pts: Option<i64>,
+    reached_eof: bool,
+    video_fps: f64,
+    video_duration: f64,
+    loop_count: u64,
+    first_pts: Option<i64>,
+    frame_count: u64,
+    shader_program: u32,
+}
+
+impl VideoHandler {
+    pub fn new(path: &str, shader_path: Option<&str>, forced_fps: Option<f64>) -> Result<Self> {
+        let fps_msg = if let Some(fps) = forced_fps {
+            format!("forced FPS: {:.1}", fps)
+        } else {
+            "original timing".to_string()
+        };
+        tracing::info!(
+            event = "video_create",
+            path = %path,
+            %fps_msg,
+            shader = shader_path.unwrap_or("default"),
+            "Creating video handler"
+        );
+
+        ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
+        let input_ctx = ffmpeg::format::input(&Path::new(path))
+            .map_err(|e| anyhow!("Failed to open video file {}: {}", path, e))?;
+
+        let stream = input_ctx
+            .streams()
+            .best(ffmpeg::media::Type::Video)
+            .ok_or_else(|| anyhow!("No video stream found in {}", path))?;
+        let stream_index = stream.index();
+
+        let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+            .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
+        let decoder = context_decoder
+            .decoder()
+            .video()
+            .map_err(|e| anyhow!("Failed to create video decoder: {}", e))?;
+
+        let width = decoder.width();
+        let height = decoder.height();
+
+        let time_base = {
+            let tb = stream.time_base();
+            tb.0 as f64 / tb.1 as f64
+        };
+        let video_duration = {
+            let duration = stream.duration();
+            if duration != ffmpeg::ffi::AV_NOPTS_VALUE {
+                duration as f64 * time_base
+            } else {
+                let format_duration = input_ctx.duration();
+                if format_duration != ffmpeg::ffi::AV_NOPTS_VALUE {
+                    format_duration as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
+                } else {
+                    0.0
+                }
+            }
+        };
+
+        let video_fps = Self::detect_fps(&stream, time_base);
+
+        tracing::info!(
+            event = "video_info",
+            width,
+            height,
+            fps = video_fps,
+            forced_fps,
+            duration = video_duration,
+            time_base,
+            "Video stream initialized"
+        );
+
+        let scaler = if decoder.format() != ffmpeg::format::Pixel::RGBA {
+            Some(
+                ffmpeg::software::scaling::Context::get(
+                    decoder.format(),
+                    width,
+                    height,
+                    ffmpeg::format::Pixel::RGBA,
+                    width,
+                    height,
+                    ffmpeg::software::scaling::flag::Flags::LANCZOS,
+                )
+                .map_err(|e| anyhow!("Failed to create scaler: {}", e))?,
+            )
+        } else {
+            None
+        };
+
+        let texture = Self::create_texture(width, height)?;
+
+        let shader_program = if let Some(shader_path) = shader_path {
+            ShaderHandler::create_media_shader(shader_path)?
+        } else {
+            Self::create_default_shader()?
+        };
+
+        Ok(Self {
+            decoder,
+            scaler,
+            texture,
+            width,
+            height,
+            input_ctx,
+            stream_index,
+            video_path: path.to_string(),
+            last_frame_updated: false,
+            time_base,
+            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            forced_fps,
+            current_frame: None,
+            next_frame: None,
+            current_frame_pts: None,
+            next_frame_pts: None,
+            reached_eof: false,
+            video_fps,
+            video_duration,
+            loop_count: 0,
+            first_pts: None,
+            frame_count: 0,
+            shader_program,
+        })
+    }
+
+    pub fn get_shader_program(&self) -> u32 {
+        self.shader_program
+    }
+
+    fn detect_fps(stream: &ffmpeg::format::stream::Stream, time_base: f64) -> f64 {
+        let rate = stream.rate();
+        let avg_rate = stream.avg_frame_rate();
+
+        let fps_from_rate = if rate.1 > 0 {
+            rate.0 as f64 / rate.1 as f64
+        } else {
+            0.0
+        };
+
+        let fps_from_avg = if avg_rate.1 > 0 {
+            avg_rate.0 as f64 / avg_rate.1 as f64
+        } else {
+            0.0
+        };
+
+        let detected_fps = if (1.0..=120.0).contains(&fps_from_rate) {
+            fps_from_rate
+        } else if (1.0..=120.0).contains(&fps_from_avg) {
+            fps_from_avg
+        } else if time_base > 0.0 {
+            let tb_fps = 1.0 / time_base;
+            if (1.0..=120.0).contains(&tb_fps) {
+                tb_fps
+            } else {
+                25.0
+            }
+        } else {
+            25.0
+        };
+
+        tracing::debug!(
+            event = "fps_detection",
+            rate_fps = fps_from_rate,
+            avg_fps = fps_from_avg,
+            time_base_fps = if time_base > 0.0 { 1.0 / time_base } else { 0.0 },
+            detected_fps,
+            "FPS detection results"
+        );
+
+        detected_fps
+    }
+
+    fn create_texture(width: u32, height: u32) -> Result<u32> {
+        let mut texture = 0;
+        unsafe {
+            gl::GenTextures(1, &mut texture);
+            gl::BindTexture(gl::TEXTURE_2D, texture);
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA as i32,
+                width as i32,
+                height as i32,
+                0,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                std::ptr::null(),
+            );
+        }
+        Ok(texture)
+    }
+
+    fn create_default_shader() -> Result<u32> {
+        let vert_source = vertex_shader();
+        let frag_source = default_shader();
+        compile_shader_program(vert_source, frag_source)
+    }
+
+    fn update_frame(&mut self) -> Result<bool> {
+        self.last_frame_updated = false;
+        let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
+        let playback_time = current_time - self.playback_start_time;
+
+        if self.next_frame.is_none() {
+            self.decode_next_frame()?;
+        }
+
+        let should_display_next = if let Some(forced_fps) = self.forced_fps {
+            let frame_duration = 1.0 / forced_fps;
+            let expected_frame_time = self.frame_count as f64 * frame_duration;
+            playback_time >= expected_frame_time
+        } else {
+            if let Some(next_pts) = self.next_frame_pts {
+                let frame_time = self.pts_to_time(next_pts);
+                playback_time >= frame_time
+            } else {
+                let frame_duration = 1.0 / self.video_fps;
+                let expected_frame_time = self.frame_count as f64 * frame_duration;
+                playback_time >= expected_frame_time
+            }
+        };
+
+        if should_display_next && self.next_frame.is_some() {
+            self.current_frame = self.next_frame.take();
+            self.current_frame_pts = self.next_frame_pts.take();
+
+            if let Some(ref frame) = self.current_frame {
+                self.upload_frame(frame);
+                self.last_frame_updated = true;
+                self.frame_count += 1;
+
+                self.decode_next_frame()?;
+            }
+        }
+
+        Ok(self.last_frame_updated)
+    }
+
+    fn pts_to_time(&self, pts: i64) -> f64 {
+        let adjusted_pts = if let Some(first) = self.first_pts {
+            pts - first
+        } else {
+            pts
+        };
+        adjusted_pts as f64 * self.time_base
+    }
+
+    fn decode_next_frame(&mut self) -> Result<()> {
+        if self.next_frame.is_some() {
+            return Ok(());
+        }
+
+        if !self.decode_frame_to_buffer()? {
+            self.loop_count += 1;
+            tracing::debug!(
+                event = "video_loop",
+                loop_count = self.loop_count,
+                frame_count = self.frame_count,
+                "Video restarted for loop"
+            );
+
+            let expected_loop_duration = if let Some(forced_fps) = self.forced_fps {
+                self.frame_count as f64 / forced_fps
+            } else if self.video_duration > 0.0 {
+                self.video_duration
+            } else {
+                self.frame_count as f64 / self.video_fps
+            };
+
+            let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
+            self.playback_start_time =
+                current_time - (self.loop_count as f64 * expected_loop_duration);
+
+            self.frame_count = 0;
+            self.first_pts = None;
+
+            self.restart_video()?;
+            self.decode_frame_to_buffer()?;
+
+            tracing::debug!(
+                event = "video_loop_timing",
+                expected_duration = expected_loop_duration,
+                new_start_time = self.playback_start_time,
+                "Adjusted timing for seamless loop"
+            );
+        }
+        Ok(())
+    }
+
+    fn decode_frame_to_buffer(&mut self) -> Result<bool> {
+        if self.reached_eof {
+            return Ok(false);
+        }
+
+        for (stream, packet) in self.input_ctx.packets() {
+            if stream.index() != self.stream_index {
+                continue;
+            }
+
+            match self.decoder.send_packet(&packet) {
+                Ok(_) => {
+                    let mut decoded = ffmpeg::frame::Video::empty();
+                    while self.decoder.receive_frame(&mut decoded).is_ok() {
+                        let pts = decoded.pts();
+
+                        if let Some(pts_val) = pts {
+                            if self.first_pts.is_none() {
+                                self.first_pts = Some(pts_val);
+                                tracing::debug!(
+                                    event = "video_first_pts",
+                                    pts = pts_val,
+                                    time = self.pts_to_time(pts_val),
+                                    "First frame PTS recorded"
+                                );
+                            }
+                        }
+
+                        let rgba_frame = self.convert_frame(decoded)?;
+                        self.next_frame = Some(rgba_frame);
+                        self.next_frame_pts = pts;
+                        return Ok(true);
+                    }
+                }
+                Err(ffmpeg::Error::Eof) => {
+                    self.reached_eof = true;
+                    return Ok(false);
+                }
+                Err(_) => {
+                    continue;
+                }
+            }
+        }
+
+        self.reached_eof = true;
+        Ok(false)
+    }
+
+    fn convert_frame(&mut self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video> {
+        if frame.format() != ffmpeg::format::Pixel::RGBA {
+            if let Some(ref mut scaler) = self.scaler {
+                let mut rgba_frame = ffmpeg::frame::Video::empty();
+                scaler
+                    .run(&frame, &mut rgba_frame)
+                    .map_err(|e| anyhow!("Scaling failed: {}", e))?;
+                rgba_frame.set_pts(frame.pts());
+                Ok(rgba_frame)
+            } else {
+                Ok(frame)
+            }
+        } else {
+            Ok(frame)
+        }
+    }
+
+    fn upload_frame(&self, frame: &ffmpeg::frame::Video) {
+        unsafe {
+            gl::BindTexture(gl::TEXTURE_2D, self.texture);
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+            gl::TexSubImage2D(
+                gl::TEXTURE_2D,
+                0,
+                0,
+                0,
+                frame.width() as i32,
+                frame.height() as i32,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                frame.data(0).as_ptr() as *const _,
+            );
+        }
+    }
+
+    fn restart_video(&mut self) -> Result<()> {
+        self.current_frame = None;
+        self.next_frame = None;
+        self.current_frame_pts = None;
+        self.next_frame_pts = None;
+        self.reached_eof = false;
+
+        self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
+            .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
+
+        let stream = self
+            .input_ctx
+            .streams()
+            .best(ffmpeg::media::Type::Video)
+            .ok_or_else(|| anyhow!("No video stream on restart"))?;
+
+        self.stream_index = stream.index();
+
+        let context_decoder =
+            ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        self.decoder = context_decoder.decoder().video()?;
+
+        Ok(())
+    }
+}
+
+impl MediaHandler for VideoHandler {
+    fn get_texture(&self) -> Option<u32> {
+        Some(self.texture)
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn update(&mut self) -> Result<bool> {
+        self.update_frame()
+    }
+
+    fn has_new_frame(&self) -> bool {
+        self.last_frame_updated
+    }
+}
+
+impl Drop for VideoHandler {
+    fn drop(&mut self) {
+        unsafe {
+            gl::DeleteTextures(1, &self.texture);
+            gl::DeleteProgram(self.shader_program);
+        }
+    }
+}
+</file>
+
 <file path="src/ui/components/mod.rs">
 pub mod lib_popup;
 pub mod panel;
@@ -1606,6 +1680,9 @@ fn create_preview<'a>(
 </file>
 
 <file path="src/bin/daemon/utils.rs">
+use crate::gl_bindings as gl;
+use anyhow::{Result, anyhow};
+use std::ffi::{CStr, CString};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1667,6 +1744,121 @@ void main() {
     gl_Position = vec4(datIn, 0.0, 1.0);
 }
 "#
+}
+
+pub fn compile_shader(vert_source: &str, frag_source: &str) -> Result<u32> {
+    unsafe {
+        let program = gl::CreateProgram();
+
+        let vert_shader = gl::CreateShader(gl::VERTEX_SHADER);
+        let vert_c_str = CString::new(vert_source)?;
+        gl::ShaderSource(vert_shader, 1, &vert_c_str.as_ptr(), std::ptr::null());
+        gl::CompileShader(vert_shader);
+        check_shader_compile(vert_shader, "vertex")?;
+
+        let frag_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
+        let frag_c_str = CString::new(frag_source)?;
+        gl::ShaderSource(frag_shader, 1, &frag_c_str.as_ptr(), std::ptr::null());
+        gl::CompileShader(frag_shader);
+        check_shader_compile(frag_shader, "fragment")?;
+
+        gl::AttachShader(program, vert_shader);
+        gl::AttachShader(program, frag_shader);
+        gl::LinkProgram(program);
+        check_program_link(program)?;
+
+        gl::DeleteShader(vert_shader);
+        gl::DeleteShader(frag_shader);
+
+        Ok(program)
+    }
+}
+
+fn check_shader_compile(shader: u32, shader_type: &str) -> Result<()> {
+    unsafe {
+        let mut status = 0;
+        gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut status);
+        if status == gl::FALSE as i32 {
+            let mut log_length = 0;
+            gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_length);
+            let mut log = vec![0u8; log_length as usize];
+            gl::GetShaderInfoLog(
+                shader,
+                log_length,
+                std::ptr::null_mut(),
+                log.as_mut_ptr() as *mut i8,
+            );
+            let log_str = CStr::from_ptr(log.as_ptr() as *const i8).to_string_lossy();
+            return Err(anyhow!(
+                "{} shader compilation failed: {}",
+                shader_type,
+                log_str
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_program_link(program: u32) -> Result<()> {
+    unsafe {
+        let mut status = 0;
+        gl::GetProgramiv(program, gl::LINK_STATUS, &mut status);
+        if status == gl::FALSE as i32 {
+            let mut log_length = 0;
+            gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut log_length);
+            let mut log = vec![0u8; log_length as usize];
+            gl::GetProgramInfoLog(
+                program,
+                log_length,
+                std::ptr::null_mut(),
+                log.as_mut_ptr() as *mut i8,
+            );
+            let log_str = CStr::from_ptr(log.as_ptr() as *const i8).to_string_lossy();
+            return Err(anyhow!("Program linking failed: {}", log_str));
+        }
+    }
+    Ok(())
+}
+
+pub fn prepare_shader_source(raw_shader: &str) -> String {
+    let mut version_directive: Option<&str> = None;
+    let mut body_lines = Vec::new();
+
+    for line in raw_shader.lines() {
+        let trimmed = line.trim_start();
+        if version_directive.is_none() && trimmed.starts_with("#version") {
+            version_directive = Some(line);
+        } else {
+            body_lines.push(line);
+        }
+    }
+
+    // Remove precision directives that will be added automatically
+    body_lines.retain(|l| {
+        let t = l.trim_start();
+        !(t.starts_with("precision ") && t.ends_with("float;"))
+    });
+
+    let mut frag_source = String::new();
+    if let Some(v) = version_directive {
+        frag_source.push_str(v);
+        frag_source.push('\n');
+    }
+
+    frag_source.push_str(
+        r#"
+        #ifdef GL_ES
+          #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+          #else
+            precision mediump float;
+          #endif
+        #endif
+        "#,
+    );
+
+    frag_source.push_str(&body_lines.join("\n"));
+    frag_source
 }
 </file>
 
@@ -2494,23 +2686,65 @@ impl MonitorState {
 use crate::utils;
 use crate::wayland::fifo::FifoReader;
 use anyhow::{Result, anyhow};
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use wayland_client::protocol::wl_output;
 
 use crate::gl_bindings as gl;
-use crate::media::{MediaType, VideoDecoder, load_shader, load_texture};
-use crate::utils::{default_shader, vertex_shader};
+use crate::media::{MediaType, shader::ShaderHandler, image::ImageHandler, video::VideoHandler, shader::MediaHandler};
+
+pub enum MediaHandler {
+    Shader(ShaderHandler),
+    Image(ImageHandler),
+    Video(VideoHandler),
+}
+
+impl MediaHandler {
+    fn get_texture(&self) -> Option<u32> {
+        match self {
+            MediaHandler::Shader(h) => h.get_texture(),
+            MediaHandler::Image(h) => h.get_texture(),
+            MediaHandler::Video(h) => h.get_texture(),
+        }
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        match self {
+            MediaHandler::Shader(h) => h.get_dimensions(),
+            MediaHandler::Image(h) => h.get_dimensions(),
+            MediaHandler::Video(h) => h.get_dimensions(),
+        }
+    }
+
+    fn update(&mut self) -> Result<bool> {
+        match self {
+            MediaHandler::Shader(h) => h.update(),
+            MediaHandler::Image(h) => h.update(),
+            MediaHandler::Video(h) => h.update(),
+        }
+    }
+
+    fn has_new_frame(&self) -> bool {
+        match self {
+            MediaHandler::Shader(h) => h.has_new_frame(),
+            MediaHandler::Image(h) => h.has_new_frame(),
+            MediaHandler::Video(h) => h.has_new_frame(),
+        }
+    }
+
+    fn get_shader_program(&self) -> u32 {
+        match self {
+            MediaHandler::Shader(h) => h.get_shader_program(),
+            MediaHandler::Image(h) => h.get_shader_program(),
+            MediaHandler::Video(h) => h.get_shader_program(),
+        }
+    }
+}
 
 pub struct MediaRenderer {
-    shader: u32,
-    texture: Option<u32>,
-    decoder: Option<VideoDecoder>,
+    media_handler: MediaHandler,
     vbo: u32,
-    media_width: u32,
-    media_height: u32,
+    ebo: u32,
     start_time: u64,
-    media_type: MediaType,
-    fps: u16,
 }
 
 impl MediaRenderer {
@@ -2524,10 +2758,30 @@ impl MediaRenderer {
 
         let start_time = utils::get_time_millis();
 
+        Self::initialize_gl()?;
+
+        let media_handler = Self::create_media_handler(media_type, fps)?;
+        let (vbo, ebo) = Self::setup_geometry()?;
+
+        tracing::debug!(
+            event = "renderer_ready",
+            has_texture = media_handler.get_texture().is_some(),
+            "Renderer initialized"
+        );
+
+        Ok(Self {
+            media_handler,
+            vbo,
+            ebo,
+            start_time,
+        })
+    }
+
+    fn initialize_gl() -> Result<()> {
         unsafe {
             gl::load_with(|s| {
                 let c_str = CString::new(s).unwrap();
-                let proc_addr = match CStr::from_bytes_with_nul(b"eglGetProcAddress\0") {
+                let proc_addr = match std::ffi::CStr::from_bytes_with_nul(b"eglGetProcAddress\0") {
                     Ok(name) => libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()),
                     Err(_) => std::ptr::null_mut(),
                 };
@@ -2542,84 +2796,35 @@ impl MediaRenderer {
 
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
         }
+        Ok(())
+    }
 
-        let (shader_program, media_texture, video_decoder, media_width, media_height) =
-            if media_type == MediaType::Shader("default".to_string()) {
-                let program = Self::default_shader()?;
-                (program, None, None, 0, 0)
-            } else {
-                match &media_type {
-                    MediaType::Shader(path) => {
-                        let program = Self::create_pure_shader(path)?;
-                        (program, None, None, 0, 0)
-                    }
-                    MediaType::Image { path, shader } => {
-                        let img = image::open(path)
-                            .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
-                        let (w, h) = (img.width(), img.height());
-                        let texture = load_texture(path)?;
-                        let program = if let Some(s) = shader {
-                            Self::create_media_shader(s)?
-                        } else {
-                            Self::create_default_shader()?
-                        };
-                        (program, Some(texture), None, w, h)
-                    }
-                    MediaType::Video { path, shader } => {
-                        let decoder = if fps > 0 {
-                            VideoDecoder::new_with_fps(path, Some(fps as f64))?
-                        } else {
-                            VideoDecoder::new(path)?
-                        };
-                        let (w, h) = (decoder.width(), decoder.height());
-                        let texture = decoder.texture();
-                        let program = if let Some(s) = shader {
-                            Self::create_media_shader(s)?
-                        } else {
-                            Self::create_default_shader()?
-                        };
-                        (program, Some(texture), Some(decoder), w, h)
-                    }
-                }
-            };
-
-        let (vbo, _) = Self::setup_geometry()?;
-
-        tracing::debug!(
-            event = "renderer_ready",
-            media_width,
-            media_height,
-            has_texture = media_texture.is_some(),
-            has_decoder = video_decoder.is_some(),
-            "Renderer initialized"
-        );
-
-        Ok(Self {
-            shader: shader_program,
-            texture: media_texture,
-            decoder: video_decoder,
-            media_width,
-            media_height,
-            vbo,
-            start_time,
-            media_type,
-            fps,
-        })
+    fn create_media_handler(media_type: MediaType, fps: u16) -> Result<MediaHandler> {
+        match media_type {
+            MediaType::Shader(path) => {
+                let shader_path = if path == "default" { None } else { Some(path.as_str()) };
+                Ok(MediaHandler::Shader(ShaderHandler::new(shader_path)?))
+            }
+            MediaType::Image { path, shader } => {
+                Ok(MediaHandler::Image(ImageHandler::new(&path, shader.as_deref())?))
+            }
+            MediaType::Video { path, shader } => {
+                let forced_fps = if fps > 0 { Some(fps as f64) } else { None };
+                Ok(MediaHandler::Video(VideoHandler::new(&path, shader.as_deref(), forced_fps)?))
+            }
+        }
     }
 
     pub fn has_new_frame(&self) -> bool {
-        if let Some(ref decoder) = self.decoder {
-            decoder.has_new_frame()
-        } else {
-            false
-        }
+        self.media_handler.has_new_frame()
     }
 
     fn update_geometry(&self, output_width: i32, output_height: i32) {
         let output_w = output_width as f32;
         let output_h = output_height as f32;
-        let media_w = self.media_width as f32;
-        let media_h = self.media_height as f32;
+        let (media_width, media_height) = self.media_handler.get_dimensions();
+        let media_w = media_width as f32;
+        let media_h = media_height as f32;
 
         if media_w <= 0.0 || media_h <= 0.0 {
             let verts: [f32; 16] = [
@@ -2674,30 +2879,6 @@ impl MediaRenderer {
         }
     }
 
-    fn default_shader() -> Result<u32> {
-        let vert_source = r#"
-            #version 100
-            attribute highp vec2 datIn;
-            attribute highp vec2 texIn;
-            varying highp vec2 texCoords;
-            void main() {
-                texCoords = texIn;
-                gl_Position = vec4(datIn, 0.0, 1.0);
-            }
-        "#;
-
-        let frag_source = r#"
-            #ifdef GL_ES
-            precision mediump float;
-            #endif
-            void main() {
-                gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-            }
-        "#;
-
-        Self::compile(vert_source, frag_source)
-    }
-
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
         tracing::info!(
             event = "renderer_media_update",
@@ -2706,231 +2887,14 @@ impl MediaRenderer {
             "Updating renderer media"
         );
 
-        if let Some(texture) = self.texture {
-            unsafe {
-                gl::DeleteTextures(1, &texture);
-            }
-            tracing::debug!(event = "texture_deleted", "Previous texture deleted");
-        }
-        self.decoder = None;
-
-        let (shader_program, media_texture, video_decoder, media_width, media_height) =
-            match &new_media_type {
-                MediaType::Shader(path) => {
-                    let program = Self::create_pure_shader(path)?;
-                    (program, None, None, 0, 0)
-                }
-                MediaType::Image { path, shader } => {
-                    let img = image::open(path)
-                        .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
-                    let (w, h) = (img.width(), img.height());
-                    let texture = load_texture(path)?;
-                    let program = if let Some(s) = shader {
-                        Self::create_media_shader(s)?
-                    } else {
-                        Self::create_default_shader()?
-                    };
-                    (program, Some(texture), None, w, h)
-                }
-                MediaType::Video { path, shader } => {
-                    let decoder = if fps > 0 {
-                        VideoDecoder::new_with_fps(path, Some(fps as f64))?
-                    } else {
-                        VideoDecoder::new(path)?
-                    };
-                    let (w, h) = (decoder.width(), decoder.height());
-                    let texture = decoder.texture();
-                    let program = if let Some(s) = shader {
-                        Self::create_media_shader(s)?
-                    } else {
-                        Self::create_default_shader()?
-                    };
-                    (program, Some(texture), Some(decoder), w, h)
-                }
-            };
-
-        unsafe {
-            gl::DeleteProgram(self.shader);
-        }
-
-        self.shader = shader_program;
-        self.texture = media_texture;
-        self.decoder = video_decoder;
-        self.media_width = media_width;
-        self.media_height = media_height;
-        self.media_type = new_media_type;
-        self.fps = fps;
+        self.media_handler = Self::create_media_handler(new_media_type, fps)?;
 
         tracing::debug!(
             event = "renderer_media_ready",
-            media_width = self.media_width,
-            media_height = self.media_height,
-            has_decoder = self.decoder.is_some(),
+            dimensions = ?self.media_handler.get_dimensions(),
+            has_texture = self.media_handler.get_texture().is_some(),
             "Media update complete"
         );
-        Ok(())
-    }
-
-    fn create_pure_shader(shader_path: &str) -> Result<u32> {
-        let raw = load_shader(shader_path)?;
-        let mut version_directive: Option<&str> = None;
-        let mut body_lines = Vec::new();
-        for line in raw.lines() {
-            let trimmed = line.trim_start();
-            if version_directive.is_none() && trimmed.starts_with("#version") {
-                version_directive = Some(line);
-            } else {
-                body_lines.push(line);
-            }
-        }
-        body_lines.retain(|l| {
-            let t = l.trim_start();
-            !(t.starts_with("precision ") && t.ends_with("float;"))
-        });
-        let mut frag_source = String::new();
-        if let Some(v) = version_directive {
-            frag_source.push_str(v);
-            frag_source.push('\n');
-        }
-        frag_source.push_str(
-            r#"
-            #ifdef GL_ES
-              #ifdef GL_FRAGMENT_PRECISION_HIGH
-                precision highp float;
-              #else
-                precision mediump float;
-              #endif
-            #endif
-            "#,
-        );
-        frag_source.push_str(&body_lines.join("\n"));
-        let vert_source = r#"
-            #version 100
-            attribute highp vec2 datIn;
-            attribute highp vec2 texIn;
-            varying highp vec2 texCoords;
-            void main() {
-                texCoords = texIn;
-                gl_Position = vec4(datIn, 0.0, 1.0);
-            }
-        "#;
-        Self::compile(vert_source, &frag_source)
-    }
-
-    fn create_media_shader(shader_path: &str) -> Result<u32> {
-        let raw = load_shader(shader_path)?;
-        let mut version_directive: Option<&str> = None;
-        let mut body_lines = Vec::new();
-        for line in raw.lines() {
-            let trimmed = line.trim_start();
-            if version_directive.is_none() && trimmed.starts_with("#version") {
-                version_directive = Some(line);
-            } else {
-                body_lines.push(line);
-            }
-        }
-        body_lines.retain(|l| {
-            let t = l.trim_start();
-            !(t.starts_with("precision ") && t.ends_with("float;"))
-        });
-        let mut frag_source = String::new();
-        if let Some(v) = version_directive {
-            frag_source.push_str(v);
-            frag_source.push('\n');
-        }
-        frag_source.push_str(
-            r#"
-            #ifdef GL_ES
-              #ifdef GL_FRAGMENT_PRECISION_HIGH
-                precision highp float;
-              #else
-                precision mediump float;
-              #endif
-            #endif
-            "#,
-        );
-        frag_source.push_str(&body_lines.join("\n"));
-        let vert_source = vertex_shader();
-        Self::compile(vert_source, &frag_source)
-    }
-
-    fn create_default_shader() -> Result<u32> {
-        let vert_source = vertex_shader();
-        let frag_source = default_shader();
-        Self::compile(vert_source, frag_source)
-    }
-
-    fn compile(vert_source: &str, frag_source: &str) -> Result<u32> {
-        unsafe {
-            let program = gl::CreateProgram();
-
-            let vert_shader = gl::CreateShader(gl::VERTEX_SHADER);
-            let vert_c_str = CString::new(vert_source)?;
-            gl::ShaderSource(vert_shader, 1, &vert_c_str.as_ptr(), std::ptr::null());
-            gl::CompileShader(vert_shader);
-            Self::check_compile(vert_shader, "vertex")?;
-
-            let frag_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
-            let frag_c_str = CString::new(frag_source)?;
-            gl::ShaderSource(frag_shader, 1, &frag_c_str.as_ptr(), std::ptr::null());
-            gl::CompileShader(frag_shader);
-            Self::check_compile(frag_shader, "fragment")?;
-
-            gl::AttachShader(program, vert_shader);
-            gl::AttachShader(program, frag_shader);
-            gl::LinkProgram(program);
-            Self::check_linked(program)?;
-
-            gl::DeleteShader(vert_shader);
-            gl::DeleteShader(frag_shader);
-
-            Ok(program)
-        }
-    }
-
-    fn check_compile(shader: u32, shader_type: &str) -> Result<()> {
-        unsafe {
-            let mut status = 0;
-            gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut status);
-            if status == gl::FALSE as i32 {
-                let mut log_length = 0;
-                gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_length);
-                let mut log = vec![0u8; log_length as usize];
-                gl::GetShaderInfoLog(
-                    shader,
-                    log_length,
-                    std::ptr::null_mut(),
-                    log.as_mut_ptr() as *mut i8,
-                );
-                let log_str = CStr::from_ptr(log.as_ptr() as *const i8).to_string_lossy();
-                return Err(anyhow!(
-                    "{} shader compilation failed: {}",
-                    shader_type,
-                    log_str
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn check_linked(program: u32) -> Result<()> {
-        unsafe {
-            let mut status = 0;
-            gl::GetProgramiv(program, gl::LINK_STATUS, &mut status);
-            if status == gl::FALSE as i32 {
-                let mut log_length = 0;
-                gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut log_length);
-                let mut log = vec![0u8; log_length as usize];
-                gl::GetProgramInfoLog(
-                    program,
-                    log_length,
-                    std::ptr::null_mut(),
-                    log.as_mut_ptr() as *mut i8,
-                );
-                let log_str = CStr::from_ptr(log.as_ptr() as *const i8).to_string_lossy();
-                return Err(anyhow!("Program linking failed: {}", log_str));
-            }
-        }
         Ok(())
     }
 
@@ -2994,39 +2958,59 @@ impl MediaRenderer {
         _transform: wl_output::Transform,
     ) -> Result<()> {
         unsafe {
-            gl::UseProgram(self.shader);
+            let shader_program = self.media_handler.get_shader_program();
+            gl::UseProgram(shader_program);
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::Viewport(0, 0, output_width, output_height);
 
-            if let Some(ref mut decoder) = self.decoder {
-                let _ = decoder.update_frame()?;
-            }
+            // Update media (videos need frame updates)
+            let _ = self.media_handler.update()?;
 
-            let time_loc = gl::GetUniformLocation(self.shader, b"time\0".as_ptr() as *const i8);
-            if time_loc != -1 {
-                let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
-                gl::Uniform1f(time_loc, time);
-            }
+            // Set shader uniforms
+            self.set_uniforms(shader_program, output_width, output_height, fifo_reader)?;
 
-            let resolution_loc =
-                gl::GetUniformLocation(self.shader, b"resolution\0".as_ptr() as *const i8);
-            if resolution_loc != -1 {
-                gl::Uniform2f(resolution_loc, output_width as f32, output_height as f32);
-            }
-
-            if let Some(texture) = self.texture {
+            // Bind texture if available
+            if let Some(texture) = self.media_handler.get_texture() {
                 gl::ActiveTexture(gl::TEXTURE0);
                 gl::BindTexture(gl::TEXTURE_2D, texture);
 
-                let media_loc =
-                    gl::GetUniformLocation(self.shader, b"u_media\0".as_ptr() as *const i8);
+                let media_loc = gl::GetUniformLocation(shader_program, b"u_media\0".as_ptr() as *const i8);
                 if media_loc != -1 {
                     gl::Uniform1i(media_loc, 0);
                 }
             }
 
+            // Update geometry and draw
+            self.update_geometry(output_width, output_height);
+            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
+        }
+        Ok(())
+    }
+
+    fn set_uniforms(
+        &self,
+        shader_program: u32,
+        output_width: i32,
+        output_height: i32,
+        fifo_reader: &mut Option<FifoReader>,
+    ) -> Result<()> {
+        unsafe {
+            // Time uniform
+            let time_loc = gl::GetUniformLocation(shader_program, b"time\0".as_ptr() as *const i8);
+            if time_loc != -1 {
+                let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
+                gl::Uniform1f(time_loc, time);
+            }
+
+            // Resolution uniform
+            let resolution_loc = gl::GetUniformLocation(shader_program, b"resolution\0".as_ptr() as *const i8);
+            if resolution_loc != -1 {
+                gl::Uniform2f(resolution_loc, output_width as f32, output_height as f32);
+            }
+
+            // FIFO uniform for audio data
             if let Some(reader) = fifo_reader {
-                let fifo_loc = gl::GetUniformLocation(self.shader, b"fifo\0".as_ptr() as *const i8);
+                let fifo_loc = gl::GetUniformLocation(shader_program, b"fifo\0".as_ptr() as *const i8);
                 if fifo_loc != -1 {
                     if let Ok(Some(sample)) = reader.read_sample() {
                         let left_val = if !sample.left.is_empty() {
@@ -3043,11 +3027,17 @@ impl MediaRenderer {
                     }
                 }
             }
-
-            self.update_geometry(output_width, output_height);
-            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, std::ptr::null());
         }
         Ok(())
+    }
+}
+
+impl Drop for MediaRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            gl::DeleteBuffers(1, &self.vbo);
+            gl::DeleteBuffers(1, &self.ebo);
+        }
     }
 }
 </file>
@@ -3065,7 +3055,6 @@ use std::sync::mpsc::Receiver;
 use wayland_client::{Connection, protocol::wl_output};
 
 use crate::ipc::MediaChange;
-use crate::lossless_scaling::ScalingAlgorithm;
 use crate::media::MediaType;
 
 mod fifo;
@@ -3080,7 +3069,6 @@ pub fn init(
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
     mute: bool,
-    _scaling_algorithm: Option<ScalingAlgorithm>,
     _sharpening: f32,
 ) -> Result<()> {
     tracing::info!(
@@ -3089,7 +3077,6 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        scaling = ?_scaling_algorithm,
         sharpening = _sharpening,
         "Initializing Wayland stack with lossless scaling"
     );
@@ -3381,7 +3368,6 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod ipc;
-mod lossless_scaling;
 mod media;
 mod utils;
 mod wayland; 
@@ -3501,14 +3487,6 @@ fn main() -> Result<()> {
 
     let init_media = media::MediaType::Shader("default".to_string());
 
-    let scaling_algorithm = match args.scaling {
-        ScalingMode::FSR => Some(lossless_scaling::ScalingAlgorithm::FSR),
-        ScalingMode::Lanczos => Some(lossless_scaling::ScalingAlgorithm::Lanczos),
-        ScalingMode::Mitchell => Some(lossless_scaling::ScalingAlgorithm::Mitchell),
-        ScalingMode::Bicubic => Some(lossless_scaling::ScalingAlgorithm::Bicubic),
-        ScalingMode::None => None,
-    };
-
     wayland::init(
         init_media,
         args.fps,
@@ -3516,613 +3494,11 @@ fn main() -> Result<()> {
         args.fifo.as_deref(),
         rx,
         args.mute,
-        scaling_algorithm,
         args.sharpening,
     )?;
 
     tracing::info!(event = "daemon_exit", "Papyrust daemon exited");
     Ok(())
-}
-</file>
-
-<file path="src/bin/daemon/media.rs">
-use anyhow::{Result, anyhow};
-use ffmpeg_next as ffmpeg;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-use std::sync::{Arc, OnceLock};
-
-use crate::gl_bindings as gl;
-use crate::lossless_scaling::{LosslessScaler, ScalingAlgorithm};
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MediaType {
-    Shader(String),
-    Image {
-        path: String,
-        shader: Option<String>,
-    },
-    Video {
-        path: String,
-        shader: Option<String>,
-    },
-}
-
-pub struct ImageLoader {
-    _scaler: Option<Arc<LosslessScaler>>,
-}
-
-impl ImageLoader {
-    pub fn new() -> Self {
-        Self { _scaler: None }
-    }
-
-    #[allow(dead_code)]
-    pub async fn new_with_scaler(algorithm: ScalingAlgorithm) -> Result<Self> {
-        let scaler = LosslessScaler::new(algorithm).await?;
-        Ok(Self {
-            _scaler: Some(Arc::new(scaler)),
-        })
-    }
-
-    pub fn load_texture(&self, path: &str) -> Result<u32> {
-        tracing::info!(event = "image_load", path = %path, "Loading image");
-
-        let img = image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
-        let rgba = img.to_rgba8();
-        let (width, height) = (img.width(), img.height());
-
-        tracing::debug!(event = "image_info", width, height, "Image decoded");
-
-        let mut texture = 0;
-        unsafe {
-            gl::GenTextures(1, &mut texture);
-            gl::BindTexture(gl::TEXTURE_2D, texture);
-
-            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
-
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-
-            gl::TexParameteri(
-                gl::TEXTURE_2D,
-                gl::TEXTURE_MIN_FILTER,
-                gl::LINEAR_MIPMAP_LINEAR as i32,
-            );
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-
-            let mut max_anisotropy = 0.0f32;
-            gl::GetFloatv(0x84FE, &mut max_anisotropy);
-            if max_anisotropy > 1.0 {
-                let anisotropy = max_anisotropy.min(16.0);
-                gl::TexParameterf(gl::TEXTURE_2D, 0x84FE, anisotropy);
-                tracing::debug!(
-                    event = "anisotropic_filtering",
-                    anisotropy,
-                    "Applied anisotropic filtering"
-                );
-            }
-
-            gl::TexImage2D(
-                gl::TEXTURE_2D,
-                0,
-                gl::RGBA as i32,
-                width as i32,
-                height as i32,
-                0,
-                gl::RGBA,
-                gl::UNSIGNED_BYTE,
-                rgba.as_ptr() as *const _,
-            );
-
-            gl::GenerateMipmap(gl::TEXTURE_2D);
-
-            tracing::debug!(
-                event = "texture_created",
-                width,
-                height,
-                texture,
-                "High-quality texture created with mipmaps"
-            );
-        }
-
-        Ok(texture)
-    }
-
-    #[allow(dead_code)]
-    pub fn load_texture_scaled(
-        &self,
-        path: &str,
-        target_width: u32,
-        target_height: u32,
-        sharpening: f32,
-    ) -> Result<u32> {
-        if let Some(ref scaler) = self._scaler {
-            tracing::info!(
-                event = "image_load_scaled",
-                path = %path,
-                target_width,
-                target_height,
-                sharpening,
-                "Loading and scaling image with lossless algorithm"
-            );
-
-            let img =
-                image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
-            let rgba = img.to_rgba8();
-            let (orig_width, orig_height) = (img.width(), img.height());
-
-            let final_data = if orig_width != target_width || orig_height != target_height {
-                let scaled_data = scaler.scale_texture(
-                    &rgba,
-                    orig_width,
-                    orig_height,
-                    target_width,
-                    target_height,
-                    sharpening,
-                )?;
-                scaled_data
-            } else {
-                rgba.into_raw()
-            };
-
-            let mut texture = 0;
-            unsafe {
-                gl::GenTextures(1, &mut texture);
-                gl::BindTexture(gl::TEXTURE_2D, texture);
-                gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
-
-                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-
-                gl::TexImage2D(
-                    gl::TEXTURE_2D,
-                    0,
-                    gl::RGBA as i32,
-                    target_width as i32,
-                    target_height as i32,
-                    0,
-                    gl::RGBA,
-                    gl::UNSIGNED_BYTE,
-                    final_data.as_ptr() as *const _,
-                );
-            }
-
-            tracing::debug!(
-                event = "scaled_texture_created",
-                orig_width,
-                orig_height,
-                target_width,
-                target_height,
-                texture,
-                "Lossless scaled texture created"
-            );
-
-            Ok(texture)
-        } else {
-            self.load_texture(path)
-        }
-    }
-}
-
-pub struct VideoDecoder {
-    decoder: ffmpeg::decoder::Video,
-    scaler: Option<ffmpeg::software::scaling::Context>,
-    texture: u32,
-    _width: u32,
-    _height: u32,
-    input_ctx: ffmpeg::format::context::Input,
-    stream_index: usize,
-    video_path: String,
-    last_frame_updated: bool,
-    _time_base: f64,
-    _video_start_time: f64,
-    _playback_start_time: f64,
-    forced_fps: Option<f64>,
-    frame_count: u64,
-    last_forced_frame_time: f64,
-    current_frame: Option<ffmpeg::frame::Video>,
-    next_frame: Option<ffmpeg::frame::Video>,
-    reached_eof: bool,
-    _video_fps: f64,
-    _video_duration: f64,
-    loop_count: u64,
-    _lossless_scaler: Option<Arc<LosslessScaler>>,
-}
-
-impl VideoDecoder {
-    pub fn new(path: &str) -> Result<Self> {
-        Self::new_with_fps(path, None)
-    }
-
-    pub fn new_with_fps(path: &str, forced_fps: Option<f64>) -> Result<Self> {
-        Self::new_with_scaler(path, forced_fps, None)
-    }
-
-    #[allow(dead_code)]
-    pub async fn new_with_lossless_scaling(
-        path: &str,
-        forced_fps: Option<f64>,
-        algorithm: ScalingAlgorithm,
-    ) -> Result<Self> {
-        let scaler = LosslessScaler::new(algorithm).await?;
-        Self::new_with_scaler(path, forced_fps, Some(Arc::new(scaler)))
-    }
-
-    fn new_with_scaler(
-        path: &str,
-        forced_fps: Option<f64>,
-        lossless_scaler: Option<Arc<LosslessScaler>>,
-    ) -> Result<Self> {
-        let fps_msg = if let Some(fps) = forced_fps {
-            format!("forced FPS: {:.1}", fps)
-        } else {
-            "original timing".to_string()
-        };
-        tracing::info!(event = "video_open", path = %path, %fps_msg, has_lossless = lossless_scaler.is_some(), "Initializing video decoder");
-
-        ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
-        let input_ctx = ffmpeg::format::input(&Path::new(path))
-            .map_err(|e| anyhow!("Failed to open video file {}: {}", path, e))?;
-
-        let stream = input_ctx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| anyhow!("No video stream found in {}", path))?;
-        let stream_index = stream.index();
-
-        let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-            .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
-        let decoder = context_decoder
-            .decoder()
-            .video()
-            .map_err(|e| anyhow!("Failed to create video decoder: {}", e))?;
-
-        let width = decoder.width();
-        let height = decoder.height();
-
-        let time_base = {
-            let tb = stream.time_base();
-            tb.0 as f64 / tb.1 as f64
-        };
-
-        let video_start_time = {
-            let start = stream.start_time();
-            if start != ffmpeg::ffi::AV_NOPTS_VALUE {
-                start as f64 * time_base
-            } else {
-                0.0
-            }
-        };
-
-        let video_duration = {
-            let duration = stream.duration();
-            if duration != ffmpeg::ffi::AV_NOPTS_VALUE {
-                duration as f64 * time_base
-            } else {
-                let format_duration = input_ctx.duration();
-                if format_duration != ffmpeg::ffi::AV_NOPTS_VALUE {
-                    format_duration as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
-                } else {
-                    0.0
-                }
-            }
-        };
-
-        let video_fps = {
-            let rate = stream.rate();
-            let fps = if rate.1 > 0 {
-                rate.0 as f64 / rate.1 as f64
-            } else {
-                let avg_rate = stream.avg_frame_rate();
-                if avg_rate.1 > 0 {
-                    avg_rate.0 as f64 / avg_rate.1 as f64
-                } else {
-                    1.0 / time_base
-                }
-            };
-            if (0.1..=240.0).contains(&fps) {
-                fps
-            } else {
-                tracing::warn!(
-                    event = "video_unusual_fps",
-                    fps,
-                    "Unusual FPS; using time base"
-                );
-                1.0 / time_base
-            }
-        };
-
-        tracing::info!(
-            event = "video_info",
-            width,
-            height,
-            fps = video_fps,
-            forced_fps,
-            duration = video_duration,
-            frame_duration = 1.0 / video_fps,
-            "Video stream initialized"
-        );
-
-        let scaler = if decoder.format() != ffmpeg::format::Pixel::RGBA {
-            Some(
-                ffmpeg::software::scaling::Context::get(
-                    decoder.format(),
-                    width,
-                    height,
-                    ffmpeg::format::Pixel::RGBA,
-                    width,
-                    height,
-                    ffmpeg::software::scaling::flag::Flags::LANCZOS,
-                )
-                .map_err(|e| anyhow!("Failed to create scaler: {}", e))?,
-            )
-        } else {
-            None
-        };
-
-        let mut texture = 0;
-        unsafe {
-            gl::GenTextures(1, &mut texture);
-            gl::BindTexture(gl::TEXTURE_2D, texture);
-            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-
-            gl::TexImage2D(
-                gl::TEXTURE_2D,
-                0,
-                gl::RGBA as i32,
-                width as i32,
-                height as i32,
-                0,
-                gl::RGBA,
-                gl::UNSIGNED_BYTE,
-                std::ptr::null(),
-            );
-        }
-
-        Ok(Self {
-            decoder,
-            scaler,
-            texture,
-            _width: width,
-            _height: height,
-            input_ctx,
-            stream_index,
-            video_path: path.to_string(),
-            last_frame_updated: false,
-            _time_base: time_base,
-            _video_start_time: video_start_time,
-            _playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
-            forced_fps,
-            frame_count: 0,
-            last_forced_frame_time: crate::utils::get_time_millis() as f64 / 1000.0,
-            current_frame: None,
-            next_frame: None,
-            reached_eof: false,
-            _video_fps: video_fps,
-            _video_duration: video_duration,
-            loop_count: 0,
-            _lossless_scaler: lossless_scaler,
-        })
-    }
-
-    pub fn update_frame(&mut self) -> Result<bool> {
-        self.last_frame_updated = false;
-        let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
-
-        if let Some(forced_fps) = self.forced_fps {
-            let min_frame_duration = 1.0 / forced_fps;
-            let elapsed = current_time - self.last_forced_frame_time;
-
-            if elapsed < min_frame_duration {
-                return Ok(false);
-            }
-
-            self.last_forced_frame_time = current_time;
-        }
-
-        if self.current_frame.is_some() {
-            if self.next_frame.is_some() {
-                self.current_frame = self.next_frame.take();
-                self.upload_current_frame();
-                self.last_frame_updated = true;
-                self.frame_count += 1;
-
-                self.decode_next_frame()?;
-                return Ok(self.last_frame_updated);
-            } else {
-                self.decode_next_frame()?;
-                return Ok(self.last_frame_updated);
-            }
-        } else {
-            self.decode_next_frame()?;
-            if self.next_frame.is_some() {
-                self.current_frame = self.next_frame.take();
-                self.upload_current_frame();
-                self.last_frame_updated = true;
-                self.frame_count += 1;
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
-    fn decode_next_frame(&mut self) -> Result<()> {
-        if !self.decode_frame_to_buffer()? {
-            self.loop_count += 1;
-            tracing::debug!(
-                event = "video_loop",
-                loop_count = self.loop_count,
-                "Video restarted for loop"
-            );
-            self.restart_video()?;
-            self.decode_frame_to_buffer()?;
-        }
-        Ok(())
-    }
-
-    fn decode_frame_to_buffer(&mut self) -> Result<bool> {
-        if self.reached_eof {
-            return Ok(false);
-        }
-
-        for (stream, packet) in self.input_ctx.packets() {
-            if stream.index() != self.stream_index {
-                continue;
-            }
-
-            match self.decoder.send_packet(&packet) {
-                Ok(_) => {
-                    let mut decoded = ffmpeg::frame::Video::empty();
-                    while self.decoder.receive_frame(&mut decoded).is_ok() {
-                        let rgba_frame = self.convert_frame(decoded)?;
-                        self.next_frame = Some(rgba_frame);
-                        return Ok(true);
-                    }
-                }
-                Err(ffmpeg::Error::Eof) => {
-                    self.reached_eof = true;
-                    return Ok(false);
-                }
-                Err(_) => {
-                    continue;
-                }
-            }
-        }
-
-        self.reached_eof = true;
-        Ok(false)
-    }
-
-    fn convert_frame(&mut self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video> {
-        if frame.format() != ffmpeg::format::Pixel::RGBA {
-            if let Some(ref mut scaler) = self.scaler {
-                let mut rgba_frame = ffmpeg::frame::Video::empty();
-                scaler
-                    .run(&frame, &mut rgba_frame)
-                    .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                rgba_frame.set_pts(frame.pts());
-                Ok(rgba_frame)
-            } else {
-                Ok(frame)
-            }
-        } else {
-            Ok(frame)
-        }
-    }
-
-    fn upload_current_frame(&self) {
-        if let Some(ref frame) = self.current_frame {
-            self.upload_frame(frame);
-        }
-    }
-
-    fn upload_frame(&self, frame: &ffmpeg::frame::Video) {
-        unsafe {
-            gl::BindTexture(gl::TEXTURE_2D, self.texture);
-            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-            gl::TexSubImage2D(
-                gl::TEXTURE_2D,
-                0,
-                0,
-                0,
-                frame.width() as i32,
-                frame.height() as i32,
-                gl::RGBA,
-                gl::UNSIGNED_BYTE,
-                frame.data(0).as_ptr() as *const _,
-            );
-        }
-    }
-
-    fn restart_video(&mut self) -> Result<()> {
-        self.current_frame = None;
-        self.next_frame = None;
-        self.reached_eof = false;
-
-        self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
-            .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
-
-        let stream = self
-            .input_ctx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| anyhow!("No video stream on restart"))?;
-
-        self.stream_index = stream.index();
-
-        let context_decoder =
-            ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
-        self.decoder = context_decoder.decoder().video()?;
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn scale_frame_with_lossless(
-        &self,
-        frame_data: &[u8],
-        target_width: u32,
-        target_height: u32,
-        sharpening: f32,
-    ) -> Result<Vec<u8>> {
-        if let Some(ref scaler) = self._lossless_scaler {
-            scaler.scale_texture(
-                frame_data,
-                self._width,
-                self._height,
-                target_width,
-                target_height,
-                sharpening,
-            )
-        } else {
-            Ok(frame_data.to_vec())
-        }
-    }
-
-    pub fn texture(&self) -> u32 {
-        self.texture
-    }
-
-    pub fn width(&self) -> u32 {
-        self._width
-    }
-
-    pub fn height(&self) -> u32 {
-        self._height
-    }
-
-    pub fn has_new_frame(&self) -> bool {
-        self.last_frame_updated
-    }
-}
-
-static IMAGE_LOADER: OnceLock<ImageLoader> = OnceLock::new();
-
-fn get_image_loader() -> &'static ImageLoader {
-    IMAGE_LOADER.get_or_init(|| ImageLoader::new())
-}
-
-pub fn load_texture(path: &str) -> Result<u32> {
-    get_image_loader().load_texture(path)
-}
-
-pub fn load_shader(path: &str) -> Result<String> {
-    let mut file =
-        File::open(path).map_err(|e| anyhow!("Failed to open shader file {}: {}", path, e))?;
-    let mut source = String::new();
-    file.read_to_string(&mut source)
-        .map_err(|e| anyhow!("Failed to read shader file {}: {}", path, e))?;
-    Ok(source)
 }
 </file>
 

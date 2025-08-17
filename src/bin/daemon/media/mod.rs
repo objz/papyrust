@@ -1,3 +1,5 @@
+use anyhow::Result;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaType {
     Shader(String),
@@ -11,10 +13,17 @@ pub enum MediaType {
     },
 }
 
+pub trait MediaHandler {
+    fn get_texture(&self) -> Option<u32>;
+    fn get_dimensions(&self) -> (u32, u32);
+    fn update(&mut self) -> Result<bool>;
+    fn has_new_frame(&self) -> bool;
+}
+
 pub mod image;
 pub mod shader;
 pub mod video;
 
-pub use image::load_texture;
-pub use shader::load_shader;
-pub use video::VideoDecoder;
+pub use image::ImageHandler;
+pub use shader::ShaderHandler;
+pub use video::VideoHandler;

@@ -1,15 +1,16 @@
 use anyhow::{Result, anyhow};
 use ffmpeg_next as ffmpeg;
 use std::path::Path;
-
 use crate::gl_bindings as gl;
+use crate::media::{MediaHandler, shader::ShaderHandler};
+use crate::utils::{vertex_shader, default_shader, compile_shader};
 
-pub struct VideoDecoder {
+pub struct VideoHandler {
     decoder: ffmpeg::decoder::Video,
     scaler: Option<ffmpeg::software::scaling::Context>,
     texture: u32,
-    _width: u32,
-    _height: u32,
+    width: u32,
+    height: u32,
     input_ctx: ffmpeg::format::context::Input,
     stream_index: usize,
     video_path: String,
@@ -27,24 +28,23 @@ pub struct VideoDecoder {
     loop_count: u64,
     first_pts: Option<i64>,
     frame_count: u64,
+    shader_program: u32,
 }
 
-impl VideoDecoder {
-    pub fn new(path: &str) -> Result<Self> {
-        Self::new_with_fps(path, None)
-    }
-
-    pub fn new_with_fps(path: &str, forced_fps: Option<f64>) -> Result<Self> {
-        Self::new_with_scaler(path, forced_fps)
-    }
-
-    fn new_with_scaler(path: &str, forced_fps: Option<f64>) -> Result<Self> {
+impl VideoHandler {
+    pub fn new(path: &str, shader_path: Option<&str>, forced_fps: Option<f64>) -> Result<Self> {
         let fps_msg = if let Some(fps) = forced_fps {
             format!("forced FPS: {:.1}", fps)
         } else {
             "original timing".to_string()
         };
-        tracing::info!(event = "video_open", path = %path, %fps_msg, "Initializing video decoder");
+        tracing::info!(
+            event = "video_create",
+            path = %path,
+            %fps_msg,
+            shader = shader_path.unwrap_or("default"),
+            "Creating video handler"
+        );
 
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
         let input_ctx = ffmpeg::format::input(&Path::new(path))
@@ -84,52 +84,7 @@ impl VideoDecoder {
             }
         };
 
-        let video_fps = {
-            let rate = stream.rate();
-            let avg_rate = stream.avg_frame_rate();
-
-            let fps_from_rate = if rate.1 > 0 {
-                rate.0 as f64 / rate.1 as f64
-            } else {
-                0.0
-            };
-
-            let fps_from_avg = if avg_rate.1 > 0 {
-                avg_rate.0 as f64 / avg_rate.1 as f64
-            } else {
-                0.0
-            };
-
-            let detected_fps = if (1.0..=120.0).contains(&fps_from_rate) {
-                fps_from_rate
-            } else if (1.0..=120.0).contains(&fps_from_avg) {
-                fps_from_avg
-            } else if time_base > 0.0 {
-                let tb_fps = 1.0 / time_base;
-                if (1.0..=120.0).contains(&tb_fps) {
-                    tb_fps
-                } else {
-                    25.0
-                }
-            } else {
-                25.0
-            };
-
-            tracing::debug!(
-                event = "fps_detection",
-                rate_fps = fps_from_rate,
-                avg_fps = fps_from_avg,
-                time_base_fps = if time_base > 0.0 {
-                    1.0 / time_base
-                } else {
-                    0.0
-                },
-                detected_fps,
-                "FPS detection results"
-            );
-
-            detected_fps
-        };
+        let video_fps = Self::detect_fps(&stream, time_base);
 
         tracing::info!(
             event = "video_info",
@@ -159,6 +114,89 @@ impl VideoDecoder {
             None
         };
 
+        let texture = Self::create_texture(width, height)?;
+
+        let shader_program = if let Some(shader_path) = shader_path {
+            ShaderHandler::create_media_shader(shader_path)?
+        } else {
+            Self::create_default_shader()?
+        };
+
+        Ok(Self {
+            decoder,
+            scaler,
+            texture,
+            width,
+            height,
+            input_ctx,
+            stream_index,
+            video_path: path.to_string(),
+            last_frame_updated: false,
+            time_base,
+            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            forced_fps,
+            current_frame: None,
+            next_frame: None,
+            current_frame_pts: None,
+            next_frame_pts: None,
+            reached_eof: false,
+            video_fps,
+            video_duration,
+            loop_count: 0,
+            first_pts: None,
+            frame_count: 0,
+            shader_program,
+        })
+    }
+
+    pub fn get_shader_program(&self) -> u32 {
+        self.shader_program
+    }
+
+    fn detect_fps(stream: &ffmpeg::format::stream::Stream, time_base: f64) -> f64 {
+        let rate = stream.rate();
+        let avg_rate = stream.avg_frame_rate();
+
+        let fps_from_rate = if rate.1 > 0 {
+            rate.0 as f64 / rate.1 as f64
+        } else {
+            0.0
+        };
+
+        let fps_from_avg = if avg_rate.1 > 0 {
+            avg_rate.0 as f64 / avg_rate.1 as f64
+        } else {
+            0.0
+        };
+
+        let detected_fps = if (1.0..=120.0).contains(&fps_from_rate) {
+            fps_from_rate
+        } else if (1.0..=120.0).contains(&fps_from_avg) {
+            fps_from_avg
+        } else if time_base > 0.0 {
+            let tb_fps = 1.0 / time_base;
+            if (1.0..=120.0).contains(&tb_fps) {
+                tb_fps
+            } else {
+                25.0
+            }
+        } else {
+            25.0
+        };
+
+        tracing::debug!(
+            event = "fps_detection",
+            rate_fps = fps_from_rate,
+            avg_fps = fps_from_avg,
+            time_base_fps = if time_base > 0.0 { 1.0 / time_base } else { 0.0 },
+            detected_fps,
+            "FPS detection results"
+        );
+
+        detected_fps
+    }
+
+    fn create_texture(width: u32, height: u32) -> Result<u32> {
         let mut texture = 0;
         unsafe {
             gl::GenTextures(1, &mut texture);
@@ -182,34 +220,16 @@ impl VideoDecoder {
                 std::ptr::null(),
             );
         }
-
-        Ok(Self {
-            decoder,
-            scaler,
-            texture,
-            _width: width,
-            _height: height,
-            input_ctx,
-            stream_index,
-            video_path: path.to_string(),
-            last_frame_updated: false,
-            time_base,
-            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
-            forced_fps,
-            current_frame: None,
-            next_frame: None,
-            current_frame_pts: None,
-            next_frame_pts: None,
-            reached_eof: false,
-            video_fps,
-            video_duration,
-            loop_count: 0,
-            first_pts: None,
-            frame_count: 0,
-        })
+        Ok(texture)
     }
 
-    pub fn update_frame(&mut self) -> Result<bool> {
+    fn create_default_shader() -> Result<u32> {
+        let vert_source = vertex_shader();
+        let frag_source = default_shader();
+        compile_shader(vert_source, frag_source)
+    }
+
+    fn update_frame(&mut self) -> Result<bool> {
         self.last_frame_updated = false;
         let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
         let playback_time = current_time - self.playback_start_time;
@@ -407,20 +427,31 @@ impl VideoDecoder {
 
         Ok(())
     }
+}
 
-    pub fn texture(&self) -> u32 {
-        self.texture
+impl MediaHandler for VideoHandler {
+    fn get_texture(&self) -> Option<u32> {
+        Some(self.texture)
     }
 
-    pub fn width(&self) -> u32 {
-        self._width
+    fn get_dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
-    pub fn height(&self) -> u32 {
-        self._height
+    fn update(&mut self) -> Result<bool> {
+        self.update_frame()
     }
 
-    pub fn has_new_frame(&self) -> bool {
+    fn has_new_frame(&self) -> bool {
         self.last_frame_updated
+    }
+}
+
+impl Drop for VideoHandler {
+    fn drop(&mut self) {
+        unsafe {
+            gl::DeleteTextures(1, &self.texture);
+            gl::DeleteProgram(self.shader_program);
+        }
     }
 }
