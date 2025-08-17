@@ -18,6 +18,28 @@ pub fn sleep_millis(millis: u64) {
     }
 }
 
+pub fn check_gl_error(context: &str) {
+    unsafe {
+        let error = gl::GetError();
+        if error != gl::NO_ERROR {
+            let error_str = match error {
+                gl::INVALID_ENUM => "GL_INVALID_ENUM",
+                gl::INVALID_VALUE => "GL_INVALID_VALUE",
+                gl::INVALID_OPERATION => "GL_INVALID_OPERATION",
+                gl::OUT_OF_MEMORY => "GL_OUT_OF_MEMORY",
+                _ => "Unknown error",
+            };
+            tracing::error!(
+                event = "gl_error",
+                context = %context,
+                error = %error_str,
+                error_code = error,
+                "OpenGL error detected"
+            );
+        }
+    }
+}
+
 pub fn default_shader() -> &'static str {
     r#"
 #ifdef GL_ES
@@ -67,31 +89,44 @@ void main() {
 pub fn compile_shader(vert_source: &str, frag_source: &str) -> Result<u32> {
     unsafe {
         let program = gl::CreateProgram();
+        check_gl_error("CreateProgram");
 
         let vert_shader = gl::CreateShader(gl::VERTEX_SHADER);
+        check_gl_error("CreateShader vertex");
         let vert_c_str = CString::new(vert_source)?;
         gl::ShaderSource(vert_shader, 1, &vert_c_str.as_ptr(), std::ptr::null());
         gl::CompileShader(vert_shader);
+        check_gl_error("CompileShader vertex");
         check_shader_compile(vert_shader, "vertex")?;
 
         let frag_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
+        check_gl_error("CreateShader fragment");
         let frag_c_str = CString::new(frag_source)?;
         gl::ShaderSource(frag_shader, 1, &frag_c_str.as_ptr(), std::ptr::null());
         gl::CompileShader(frag_shader);
+        check_gl_error("CompileShader fragment");
         check_shader_compile(frag_shader, "fragment")?;
 
         gl::AttachShader(program, vert_shader);
         gl::AttachShader(program, frag_shader);
+        check_gl_error("AttachShader");
         gl::LinkProgram(program);
+        check_gl_error("LinkProgram");
         check_program_link(program)?;
 
         gl::DeleteShader(vert_shader);
         gl::DeleteShader(frag_shader);
+        check_gl_error("DeleteShader");
+
+        tracing::debug!(
+            event = "shader_compiled",
+            program,
+            "Successfully compiled and linked shader program"
+        );
 
         Ok(program)
     }
 }
-
 
 fn check_shader_compile(shader: u32, shader_type: &str) -> Result<()> {
     unsafe {
@@ -152,7 +187,6 @@ pub fn prepare_shader_source(raw_shader: &str) -> String {
         }
     }
 
-    // Remove precision directives that will be added automatically
     body_lines.retain(|l| {
         let t = l.trim_start();
         !(t.starts_with("precision ") && t.ends_with("float;"))

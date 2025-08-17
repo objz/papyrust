@@ -19,22 +19,22 @@ enum Commands {
         path: String,
         #[arg(long)]
         shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        monitor: Vec<String>,
     },
     Video {
         path: String,
         #[arg(long)]
         shader: Option<String>,
-        #[arg(long)]
-        monitor: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        monitor: Vec<String>,
         #[arg(long)]
         mute: bool,
     },
     Shader {
         path: String,
-        #[arg(long)]
-        monitor: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        monitor: Vec<String>,
     },
 }
 
@@ -55,32 +55,41 @@ fn main() -> Result<()> {
             path,
             shader,
             monitor,
-        } => json!({
-            "SetImage": {
-                "path": path,
-                "shader": shader,
-                "monitor": monitor
-            }
-        }),
+        } => {
+            let monitors = if monitor.is_empty() { None } else { Some(monitor) };
+            json!({
+                "SetImage": {
+                    "path": path,
+                    "shader": shader,
+                    "monitors": monitors
+                }
+            })
+        }
         Commands::Video {
             path,
             shader,
             monitor,
             mute,
-        } => json!({
-            "SetVideo": {
-                "path": path,
-                "shader": shader,
-                "monitor": monitor,
-                "mute": mute
-            }
-        }),
-        Commands::Shader { path, monitor } => json!({
-            "SetShader": {
-                "path": path,
-                "monitor": monitor
-            }
-        }),
+        } => {
+            let monitors = if monitor.is_empty() { None } else { Some(monitor) };
+            json!({
+                "SetVideo": {
+                    "path": path,
+                    "shader": shader,
+                    "monitors": monitors,
+                    "mute": mute
+                }
+            })
+        }
+        Commands::Shader { path, monitor } => {
+            let monitors = if monitor.is_empty() { None } else { Some(monitor) };
+            json!({
+                "SetShader": {
+                    "path": path,
+                    "monitors": monitors
+                }
+            })
+        }
     };
 
     writeln!(stream, "{}", command)?;

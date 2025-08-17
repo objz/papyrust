@@ -47,7 +47,7 @@ enum ScalingMode {
 #[command(
     name = "papyrust-daemon",
     version = "0.1.0",
-    about = "A Wayland wallpaper daemon with OpenGL ES shader support and lossless scaling"
+    about = "A Wayland wallpaper daemon with OpenGL ES shader support"
 )]
 struct Args {
     #[arg(short = 'F', long)]

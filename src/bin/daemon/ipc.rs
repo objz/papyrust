@@ -11,18 +11,18 @@ pub enum IpcCommand {
     SetImage {
         path: String,
         shader: Option<String>,
-        monitor: Option<String>,
+        monitors: Option<Vec<String>>,
     },
     SetVideo {
         path: String,
         shader: Option<String>,
-        monitor: Option<String>,
+        monitors: Option<Vec<String>>,
         #[serde(default)]
         mute: bool,
     },
     SetShader {
         path: String,
-        monitor: Option<String>,
+        monitors: Option<Vec<String>>,
     },
 }
 
@@ -36,7 +36,7 @@ pub enum IpcResponse {
 #[derive(Debug, Clone)]
 pub struct MediaChange {
     pub media_type: MediaType,
-    pub monitor: Option<String>,
+    pub monitors: Option<Vec<String>>,
     pub mute: bool,
 }
 
@@ -85,19 +85,31 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
             serde_json::from_str(trimmed).map_err(|e| anyhow!("Invalid JSON command: {}", e))?;
 
         match &command {
-            IpcCommand::SetImage { monitor, path, .. } => {
-                tracing::info!(event = "ipc_command", cmd = "SetImage", monitor = monitor.as_deref(), path = %path, "Applying image");
+            IpcCommand::SetImage { monitors, path, .. } => {
+                let target_desc = match monitors {
+                    None => "all monitors".to_string(),
+                    Some(mons) => format!("monitors: {}", mons.join(", ")),
+                };
+                tracing::info!(event = "ipc_command", cmd = "SetImage", target = %target_desc, path = %path, "Applying image");
             }
             IpcCommand::SetVideo {
-                monitor,
+                monitors,
                 path,
                 mute,
                 ..
             } => {
-                tracing::info!(event = "ipc_command", cmd = "SetVideo", monitor = monitor.as_deref(), path = %path, mute = *mute, "Applying video");
+                let target_desc = match monitors {
+                    None => "all monitors".to_string(),
+                    Some(mons) => format!("monitors: {}", mons.join(", ")),
+                };
+                tracing::info!(event = "ipc_command", cmd = "SetVideo", target = %target_desc, path = %path, mute = *mute, "Applying video");
             }
-            IpcCommand::SetShader { monitor, path } => {
-                tracing::info!(event = "ipc_command", cmd = "SetShader", monitor = monitor.as_deref(), path = %path, "Applying shader");
+            IpcCommand::SetShader { monitors, path } => {
+                let target_desc = match monitors {
+                    None => "all monitors".to_string(),
+                    Some(mons) => format!("monitors: {}", mons.join(", ")),
+                };
+                tracing::info!(event = "ipc_command", cmd = "SetShader", target = %target_desc, path = %path, "Applying shader");
             }
         }
 
@@ -105,11 +117,11 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
             IpcCommand::SetImage {
                 path,
                 shader,
-                monitor,
+                monitors,
             } => {
                 let media_change = MediaChange {
                     media_type: MediaType::Image { path, shader },
-                    monitor,
+                    monitors,
                     mute: false,
                 };
                 match tx.send(media_change) {
@@ -122,12 +134,12 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
             IpcCommand::SetVideo {
                 path,
                 shader,
-                monitor,
+                monitors,
                 mute,
             } => {
                 let media_change = MediaChange {
                     media_type: MediaType::Video { path, shader },
-                    monitor,
+                    monitors,
                     mute,
                 };
                 match tx.send(media_change) {
@@ -137,10 +149,10 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
                     },
                 }
             }
-            IpcCommand::SetShader { path, monitor } => {
+            IpcCommand::SetShader { path, monitors } => {
                 let media_change = MediaChange {
                     media_type: MediaType::Shader(path),
-                    monitor,
+                    monitors,
                     mute: false,
                 };
                 match tx.send(media_change) {

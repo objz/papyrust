@@ -1,21 +1,107 @@
 use crate::utils;
-use crate::wayland::fifo::FifoReader;
-use crate::wayland::monitors::create_monitor_state;
-use crate::wayland::state::AppState;
-use anyhow::{Result, anyhow};
-use khronos_egl as egl;
-use std::collections::HashMap;
-use std::process::Child;
-use std::sync::mpsc::Receiver;
-use wayland_client::{Connection, protocol::wl_output};
-
 use crate::ipc::MediaChange;
 use crate::media::MediaType;
+use anyhow::{Result, anyhow};
+use std::process::Child;
+use std::sync::mpsc::Receiver;
+use wayland_client::Connection;
 
-mod fifo;
-mod monitors;
-mod renderer;
-mod state;
+pub mod traits;
+pub mod types;
+pub mod protocol;
+pub mod rendering;
+pub mod audio;
+pub mod monitors;
+
+use protocol::ProtocolState;
+use monitors::MonitorManager;
+use audio::fifo::FifoReader;
+use types::WaylandConfig;
+use traits::WaylandSurface as WaylandSurfaceTrait;
+
+pub struct WaylandManager {
+    protocol_state: ProtocolState,
+    monitor_manager: MonitorManager,
+    config: WaylandConfig,
+}
+
+impl WaylandManager {
+    pub fn new(config: WaylandConfig) -> Self {
+        Self {
+            protocol_state: ProtocolState::new(),
+            monitor_manager: MonitorManager::new(),
+            config,
+        }
+    }
+
+    pub fn initialize(&mut self, conn: &Connection) -> Result<()> {
+        let mut event_queue = conn.new_event_queue();
+        let qh = event_queue.handle();
+        let mut app_state = protocol::events::AppState::new();
+        
+        let _registry = conn.display().get_registry(&qh, ());
+        event_queue.roundtrip(&mut app_state)?;
+
+        if let Some(ref om) = app_state.output_manager {
+            for (id, info) in &app_state.outputs {
+                om.get_xdg_output(&info.output, &qh, *id);
+            }
+        }
+        event_queue.roundtrip(&mut app_state)?;
+
+        let compositor = app_state
+            .compositor
+            .as_ref()
+            .ok_or_else(|| anyhow!("Compositor not available"))?;
+        let layer_shell = app_state
+            .layer_shell
+            .as_ref()
+            .ok_or_else(|| anyhow!("Layer shell not available"))?;
+
+        for output_info in app_state.outputs.values() {
+            if let Some(_name) = &output_info.name {
+                self.monitor_manager.create_surface(
+                    output_info,
+                    compositor,
+                    layer_shell,
+                    self.config.layer_name.as_deref(),
+                    MediaType::Shader("default".to_string()),
+                    conn,
+                    &qh,
+                    self.config.fps,
+                )?;
+                self.protocol_state.total_surfaces += 1;
+            }
+        }
+
+        event_queue.roundtrip(&mut app_state)?;
+        while app_state.configured_count < app_state.total_surfaces {
+            tracing::debug!(
+                event = "waiting_layer_config",
+                configured = app_state.configured_count,
+                total = app_state.total_surfaces,
+                "Awaiting layer surface configuration"
+            );
+            event_queue.blocking_dispatch(&mut app_state)?;
+        }
+        event_queue.roundtrip(&mut app_state)?;
+
+        // Apply initial configurations
+        for surface in self.monitor_manager.surfaces_mut() {
+            if let Some((width, height)) = app_state.layer_surface_configs.get(&surface.surface_id.0) {
+                tracing::info!(
+                    event = "surface_configured",
+                    output = %surface.output_name,
+                    width, height,
+                    "Applying initial layer surface config"
+                );
+                WaylandSurfaceTrait::resize(surface, *width, *height)?;
+            }
+        }
+
+        Ok(())
+    }
+}
 
 pub fn init(
     media_type: MediaType,
@@ -24,7 +110,7 @@ pub fn init(
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
     mute: bool,
-    _sharpening: f32,
+    sharpening: f32,
 ) -> Result<()> {
     tracing::info!(
         event = "wayland_init",
@@ -32,109 +118,30 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        sharpening = _sharpening,
+        sharpening,
         "Initializing Wayland stack with lossless scaling"
     );
 
+    let config = WaylandConfig {
+        fps,
+        layer_name: layer_name.map(String::from),
+        fifo_path: fifo_path.map(String::from),
+        mute,
+        sharpening,
+    };
+
     let conn = Connection::connect_to_env()?;
-    let mut event_queue = conn.new_event_queue();
-    let qh = event_queue.handle();
-    let mut app_state = AppState::new();
-    let _registry = conn.display().get_registry(&qh, ());
-    event_queue.roundtrip(&mut app_state)?;
-
-    if let Some(ref om) = app_state.output_manager {
-        for (id, info) in &app_state.outputs {
-            om.get_xdg_output(&info.output, &qh, *id);
-        }
-    }
-    event_queue.roundtrip(&mut app_state)?;
-
-    let compositor = app_state
-        .compositor
-        .as_ref()
-        .ok_or_else(|| anyhow!("Compositor not available"))?;
-    let layer_shell = app_state
-        .layer_shell
-        .as_ref()
-        .ok_or_else(|| anyhow!("Layer shell not available"))?;
-    let egl_instance = egl::Instance::new(egl::Static);
-    let mut monitor_states = HashMap::new();
-
-    for output_info in app_state.outputs.values() {
-        if let Some(name) = &output_info.name {
-            let ms = create_monitor_state(
-                output_info,
-                compositor,
-                layer_shell,
-                layer_name,
-                media_type.clone(),
-                &egl_instance,
-                &conn,
-                &qh,
-                fps,
-            )?;
-            monitor_states.insert(name.clone(), ms);
-            app_state.total_surfaces += 1;
-        }
-    }
-
-    event_queue.roundtrip(&mut app_state)?;
-    while app_state.configured_count < app_state.total_surfaces {
-        tracing::debug!(
-            event = "waiting_layer_config",
-            configured = app_state.configured_count,
-            total = app_state.total_surfaces,
-            "Awaiting layer surface configuration"
-        );
-        event_queue.blocking_dispatch(&mut app_state)?;
-    }
-    event_queue.roundtrip(&mut app_state)?;
-
-    for ms in monitor_states.values_mut() {
-        if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id) {
-            tracing::info!(
-                event = "monitor_configured",
-                output = %ms.output_name,
-                width, height,
-                "Applying initial layer surface config"
-            );
-            ms.resize(*width, *height)?;
-        } else {
-            tracing::error!(
-                event = "monitor_no_config",
-                output = %ms.output_name,
-                "No layer surface config found for monitor"
-            );
-        }
-    }
-
-    let mut has_video = matches!(media_type, MediaType::Video { .. });
-    for ms in monitor_states.values() {
-        if has_video {
-            egl_instance.swap_interval(ms.egl_display, 1)?;
-            tracing::debug!(
-                event = "swap_interval_set",
-                output = %ms.output_name,
-                interval = 1,
-                "Swap interval set for video playback"
-            );
-        } else {
-            let interval = if fps == 0 { 1 } else { 0 };
-            egl_instance.swap_interval(ms.egl_display, interval)?;
-            tracing::debug!(
-                event = "swap_interval_set",
-                output = %ms.output_name,
-                interval,
-                "Swap interval set"
-            );
-        }
-    }
+    let mut wayland_manager = WaylandManager::new(config);
+    wayland_manager.initialize(&conn)?;
 
     let mut fifo_reader = fifo_path.map(FifoReader::new).transpose()?;
+    let mut has_video = matches!(media_type, MediaType::Video { .. });
+    
+    wayland_manager.monitor_manager.set_swap_intervals(has_video, fps)?;
+
     tracing::info!(
         event = "render_loop_start",
-        monitors = monitor_states.len(),
+        monitors = wayland_manager.monitor_manager.len(),
         "Starting render loop"
     );
 
@@ -148,33 +155,12 @@ pub fn init(
     loop {
         let frame_start = utils::get_time_millis();
 
-        event_queue.dispatch_pending(&mut app_state)?;
-        for ms in monitor_states.values_mut() {
-            if let Some((width, height)) = app_state.layer_surface_configs.get(&ms.layer_surface_id)
-            {
-                if !ms.configured || ms.current_width != *width || ms.current_height != *height {
-                    if let Some(config_output) =
-                        app_state.surface_to_output.get(&ms.layer_surface_id)
-                    {
-                        if config_output == &ms.output_name {
-                            ms.resize(*width, *height)?;
-                        }
-                    }
-                }
-            }
-        }
-
+        // Handle IPC messages
         if let Ok(media_change) = ipc_receiver.try_recv() {
             let new_has_video = matches!(media_change.media_type, MediaType::Video { .. });
             if has_video != new_has_video {
                 has_video = new_has_video;
-                for ms in monitor_states.values() {
-                    if has_video {
-                        egl_instance.swap_interval(ms.egl_display, 1)?;
-                    } else {
-                        egl_instance.swap_interval(ms.egl_display, if fps == 0 { 1 } else { 0 })?;
-                    }
-                }
+                wayland_manager.monitor_manager.set_swap_intervals(has_video, fps)?;
                 tracing::info!(
                     event = "swap_interval_reconfigured",
                     has_video,
@@ -182,6 +168,7 @@ pub fn init(
                 );
             }
 
+            // Handle audio for video files
             if let MediaType::Video { path, .. } = &media_change.media_type {
                 let effective_mute = mute || media_change.mute;
 
@@ -198,7 +185,7 @@ pub fn init(
                     match std::process::Command::new("ffplay")
                         .args(&[
                             "-nodisp",
-                            "-autoexit",
+                            "-autoexit", 
                             "-hide_banner",
                             "-loglevel",
                             "error",
@@ -232,55 +219,21 @@ pub fn init(
                 last_audio_path = None;
             }
 
-            if let Some(target) = &media_change.monitor {
-                if let Some(ms) = monitor_states.get_mut(target) {
-                    egl_instance.make_current(
-                        ms.egl_display,
-                        Some(ms.egl_surface),
-                        Some(ms.egl_surface),
-                        Some(ms.egl_context),
-                    )?;
-                    tracing::info!(event = "media_update", output = %ms.output_name, "Updating media on single target");
-                    ms.renderer.update_media(media_change.media_type, fps)?;
-                }
-            } else {
-                tracing::info!(event = "media_update_all", "Updating media on all monitors");
-                for ms in monitor_states.values_mut() {
-                    egl_instance.make_current(
-                        ms.egl_display,
-                        Some(ms.egl_surface),
-                        Some(ms.egl_surface),
-                        Some(ms.egl_context),
-                    )?;
-                    ms.renderer
-                        .update_media(media_change.media_type.clone(), fps)?;
-                }
-            }
+            // Update media - convert Option<Vec<String>> to Option<&[String]>
+            let target_monitors = media_change.monitors.as_deref();
+            wayland_manager.monitor_manager.update_media(
+                target_monitors,
+                media_change.media_type,
+                fps,
+            )?;
         }
 
-        // Render all outputs
-        let mut any_video_updated = false;
-        for ms in monitor_states.values_mut() {
-            egl_instance.make_current(
-                ms.egl_display,
-                Some(ms.egl_surface),
-                Some(ms.egl_surface),
-                Some(ms.egl_context),
-            )?;
-            if ms.renderer.has_new_frame() {
-                any_video_updated = true;
-            }
-            ms.renderer.draw(
-                &mut fifo_reader,
-                ms.current_width as i32,
-                ms.current_height as i32,
-                wl_output::Transform::Normal,
-            )?;
-            egl_instance.swap_buffers(ms.egl_display, ms.egl_surface)?;
-        }
+        // Render all surfaces
+        let any_video_updated = wayland_manager.monitor_manager.render_all(fifo_reader.as_mut())?;
 
         frame_count += 1;
 
+        // Frame timing
         if has_video {
             if fps == 0 {
                 let elapsed = utils::get_time_millis() - frame_start;
@@ -305,6 +258,8 @@ pub fn init(
                 utils::sleep_millis(adaptive_frame_time - elapsed);
             }
         }
+
+        // FPS tracking
         if frame_count % 300 == 0 {
             let now = utils::get_time_millis();
             let _fps_actual = 300000 / (now - last_fps_check + 1);

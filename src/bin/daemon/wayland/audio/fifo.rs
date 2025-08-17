@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::os::unix::io::{AsRawFd, RawFd};
 
-
-
 const N_SAMPLES: usize = 44100 / 25;
 
 #[derive(Debug)]
@@ -12,14 +10,13 @@ pub struct StereoSample {
 }
 
 impl StereoSample {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             left: vec![0; N_SAMPLES],
             right: vec![0; N_SAMPLES],
         }
     }
 }
-
 
 pub struct FifoReader {
     pub fd: RawFd,
