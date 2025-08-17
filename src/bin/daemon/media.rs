@@ -190,18 +190,20 @@ pub struct VideoDecoder {
     stream_index: usize,
     video_path: String,
     last_frame_updated: bool,
-    _time_base: f64,
-    _video_start_time: f64,
-    _playback_start_time: f64,
+    time_base: f64,
+    video_start_time: f64,
+    playback_start_time: f64,
     forced_fps: Option<f64>,
-    frame_count: u64,
-    last_forced_frame_time: f64,
     current_frame: Option<ffmpeg::frame::Video>,
     next_frame: Option<ffmpeg::frame::Video>,
+    current_frame_pts: Option<i64>,
+    next_frame_pts: Option<i64>,
     reached_eof: bool,
-    _video_fps: f64,
-    _video_duration: f64,
+    video_fps: f64,
+    video_duration: f64,
     loop_count: u64,
+    first_pts: Option<i64>,
+    frame_count: u64,
     _lossless_scaler: Option<Arc<LosslessScaler>>,
 }
 
@@ -286,26 +288,49 @@ impl VideoDecoder {
 
         let video_fps = {
             let rate = stream.rate();
-            let fps = if rate.1 > 0 {
+            let avg_rate = stream.avg_frame_rate();
+
+            let fps_from_rate = if rate.1 > 0 {
                 rate.0 as f64 / rate.1 as f64
             } else {
-                let avg_rate = stream.avg_frame_rate();
-                if avg_rate.1 > 0 {
-                    avg_rate.0 as f64 / avg_rate.1 as f64
-                } else {
-                    1.0 / time_base
-                }
+                0.0
             };
-            if (0.1..=240.0).contains(&fps) {
-                fps
+
+            let fps_from_avg = if avg_rate.1 > 0 {
+                avg_rate.0 as f64 / avg_rate.1 as f64
             } else {
-                tracing::warn!(
-                    event = "video_unusual_fps",
-                    fps,
-                    "Unusual FPS; using time base"
-                );
-                1.0 / time_base
-            }
+                0.0
+            };
+
+            let detected_fps = if (1.0..=120.0).contains(&fps_from_rate) {
+                fps_from_rate
+            } else if (1.0..=120.0).contains(&fps_from_avg) {
+                fps_from_avg
+            } else if time_base > 0.0 {
+                let tb_fps = 1.0 / time_base;
+                if (1.0..=120.0).contains(&tb_fps) {
+                    tb_fps
+                } else {
+                    25.0 // Final fallback
+                }
+            } else {
+                25.0
+            };
+
+            tracing::debug!(
+                event = "fps_detection",
+                rate_fps = fps_from_rate,
+                avg_fps = fps_from_avg,
+                time_base_fps = if time_base > 0.0 {
+                    1.0 / time_base
+                } else {
+                    0.0
+                },
+                detected_fps,
+                "FPS detection results"
+            );
+
+            detected_fps
         };
 
         tracing::info!(
@@ -315,7 +340,7 @@ impl VideoDecoder {
             fps = video_fps,
             forced_fps,
             duration = video_duration,
-            frame_duration = 1.0 / video_fps,
+            time_base,
             "Video stream initialized"
         );
 
@@ -370,18 +395,20 @@ impl VideoDecoder {
             stream_index,
             video_path: path.to_string(),
             last_frame_updated: false,
-            _time_base: time_base,
-            _video_start_time: video_start_time,
-            _playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            time_base,
+            video_start_time,
+            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
             forced_fps,
-            frame_count: 0,
-            last_forced_frame_time: crate::utils::get_time_millis() as f64 / 1000.0,
             current_frame: None,
             next_frame: None,
+            current_frame_pts: None,
+            next_frame_pts: None,
             reached_eof: false,
-            _video_fps: video_fps,
-            _video_duration: video_duration,
+            video_fps,
+            video_duration,
             loop_count: 0,
+            first_pts: None,
+            frame_count: 0,
             _lossless_scaler: lossless_scaler,
         })
     }
@@ -389,55 +416,90 @@ impl VideoDecoder {
     pub fn update_frame(&mut self) -> Result<bool> {
         self.last_frame_updated = false;
         let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
+        let playback_time = current_time - self.playback_start_time;
 
-        if let Some(forced_fps) = self.forced_fps {
-            let min_frame_duration = 1.0 / forced_fps;
-            let elapsed = current_time - self.last_forced_frame_time;
-
-            if elapsed < min_frame_duration {
-                return Ok(false);
-            }
-
-            self.last_forced_frame_time = current_time;
-        }
-
-        if self.current_frame.is_some() {
-            if self.next_frame.is_some() {
-                self.current_frame = self.next_frame.take();
-                self.upload_current_frame();
-                self.last_frame_updated = true;
-                self.frame_count += 1;
-
-                self.decode_next_frame()?;
-                return Ok(self.last_frame_updated);
-            } else {
-                self.decode_next_frame()?;
-                return Ok(self.last_frame_updated);
-            }
-        } else {
+        if self.next_frame.is_none() {
             self.decode_next_frame()?;
-            if self.next_frame.is_some() {
-                self.current_frame = self.next_frame.take();
-                self.upload_current_frame();
+        }
+
+        let should_display_next = if let Some(forced_fps) = self.forced_fps {
+            let frame_duration = 1.0 / forced_fps;
+            let expected_frame_time = self.frame_count as f64 * frame_duration;
+            playback_time >= expected_frame_time
+        } else {
+            if let Some(next_pts) = self.next_frame_pts {
+                let frame_time = self.pts_to_time(next_pts);
+                playback_time >= frame_time
+            } else {
+                let frame_duration = 1.0 / self.video_fps;
+                let expected_frame_time = self.frame_count as f64 * frame_duration;
+                playback_time >= expected_frame_time
+            }
+        };
+
+        if should_display_next && self.next_frame.is_some() {
+            self.current_frame = self.next_frame.take();
+            self.current_frame_pts = self.next_frame_pts.take();
+
+            if let Some(ref frame) = self.current_frame {
+                self.upload_frame(frame);
                 self.last_frame_updated = true;
                 self.frame_count += 1;
-                return Ok(true);
+
+                self.decode_next_frame()?;
             }
         }
 
-        Ok(false)
+        Ok(self.last_frame_updated)
+    }
+
+    fn pts_to_time(&self, pts: i64) -> f64 {
+        let adjusted_pts = if let Some(first) = self.first_pts {
+            pts - first
+        } else {
+            pts
+        };
+        adjusted_pts as f64 * self.time_base
     }
 
     fn decode_next_frame(&mut self) -> Result<()> {
+        if self.next_frame.is_some() {
+            return Ok(());
+        }
+
         if !self.decode_frame_to_buffer()? {
             self.loop_count += 1;
             tracing::debug!(
                 event = "video_loop",
                 loop_count = self.loop_count,
+                frame_count = self.frame_count,
                 "Video restarted for loop"
             );
+
+            let expected_loop_duration = if let Some(forced_fps) = self.forced_fps {
+                self.frame_count as f64 / forced_fps
+            } else if self.video_duration > 0.0 {
+                self.video_duration
+            } else {
+                self.frame_count as f64 / self.video_fps
+            };
+
+            let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
+            self.playback_start_time =
+                current_time - (self.loop_count as f64 * expected_loop_duration);
+
+            self.frame_count = 0;
+            self.first_pts = None;
+
             self.restart_video()?;
             self.decode_frame_to_buffer()?;
+
+            tracing::debug!(
+                event = "video_loop_timing",
+                expected_duration = expected_loop_duration,
+                new_start_time = self.playback_start_time,
+                "Adjusted timing for seamless loop"
+            );
         }
         Ok(())
     }
@@ -456,8 +518,23 @@ impl VideoDecoder {
                 Ok(_) => {
                     let mut decoded = ffmpeg::frame::Video::empty();
                     while self.decoder.receive_frame(&mut decoded).is_ok() {
+                        let pts = decoded.pts();
+
+                        if let Some(pts_val) = pts {
+                            if self.first_pts.is_none() {
+                                self.first_pts = Some(pts_val);
+                                tracing::debug!(
+                                    event = "video_first_pts",
+                                    pts = pts_val,
+                                    time = self.pts_to_time(pts_val),
+                                    "First frame PTS recorded"
+                                );
+                            }
+                        }
+
                         let rgba_frame = self.convert_frame(decoded)?;
                         self.next_frame = Some(rgba_frame);
+                        self.next_frame_pts = pts;
                         return Ok(true);
                     }
                 }
@@ -492,12 +569,6 @@ impl VideoDecoder {
         }
     }
 
-    fn upload_current_frame(&self) {
-        if let Some(ref frame) = self.current_frame {
-            self.upload_frame(frame);
-        }
-    }
-
     fn upload_frame(&self, frame: &ffmpeg::frame::Video) {
         unsafe {
             gl::BindTexture(gl::TEXTURE_2D, self.texture);
@@ -519,6 +590,8 @@ impl VideoDecoder {
     fn restart_video(&mut self) -> Result<()> {
         self.current_frame = None;
         self.next_frame = None;
+        self.current_frame_pts = None;
+        self.next_frame_pts = None;
         self.reached_eof = false;
 
         self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))

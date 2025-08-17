@@ -88,8 +88,52 @@ Cargo.toml
 <files>
 This section contains the contents of the repository's files.
 
+<file path="shaders/plasma.frag">
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+varying vec2 texCoords;
+
+void main() {
+    vec2 uv = texCoords;
+    vec2 p = (uv - 0.5) * vec2(resolution.x/resolution.y, 1.0) * 2.0;
+
+    float v1 = sin(p.x * 3.0 + time);
+    float v2 = sin((p.x * cos(time*0.7) + p.y * sin(time*0.3)) * 4.0);
+    float v3 = sin(length(p) * 5.0 - time * 1.5);
+
+    float v = (v1 + v2 + v3) / 3.0;
+
+    vec3 col = vec3(
+        0.5 + 0.5 * sin(3.0 + v * 3.0),
+        0.5 + 0.5 * sin(1.0 + v * 3.0),
+        0.5 + 0.5 * sin(5.0 + v * 3.0)
+    );
+
+    gl_FragColor = vec4(col, 1.0);
+}
+</file>
+
+<file path="shaders/rainbow.frag">
+#version 100
+precision mediump float;
+
+uniform float time;
+uniform vec2 resolution;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / resolution;
+
+    float wave = 0.5 + 0.5 * sin(uv.x * 10.0 + time);
+
+    gl_FragColor = vec4(uv.x, uv.y, wave, 1.0);
+}
+</file>
+
 <file path="src/bin/daemon/shaders/bicubic.wgsl">
-// Bicubic interpolation
 fn cubic(t: f32) -> f32 {
     let a = -0.5;
     let t2 = t * t;
@@ -113,7 +157,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     
     var result = vec4<f32>(0.0);
     
-    // 4x4 bicubic kernel
     for (var i = -1; i <= 2; i++) {
         for (var j = -1; j <= 2; j++) {
             let sample_coords = (base_coords + vec2<f32>(f32(i), f32(j))) / uniforms.input_size;
@@ -138,7 +181,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex_coords = input.tex_coords;
     let texel_size = 1.0 / uniforms.input_size;
     
-    // FSR EASU (Edge Adaptive Spatial Upsampling)
     let b = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(-texel_size.x, -texel_size.y));
     let d = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(0.0, -texel_size.y));
     let f = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(texel_size.x, -texel_size.y));
@@ -149,27 +191,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let n = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(0.0, texel_size.y));
     let p = textureSample(input_texture, texture_sampler, tex_coords + vec2<f32>(texel_size.x, texel_size.y));
     
-    // Calculate local contrast
     let min_g = min(min(min(d.g, h.g), min(i.g, j.g)), n.g);
     let max_g = max(max(max(d.g, h.g), max(i.g, j.g)), n.g);
     
-    // Edge detection
     let w = 1.0 - saturate((max_g - min_g) / max(max_g, 1e-6));
     
-    // Directional filtering
     let dir_horizontal = abs(h.g + j.g - 2.0 * i.g);
     let dir_vertical = abs(d.g + n.g - 2.0 * i.g);
     
     var result: vec4<f32>;
     if dir_horizontal < dir_vertical {
-        // Horizontal edge - interpolate vertically
         result = mix(d, n, 0.5);
     } else {
-        // Vertical edge - interpolate horizontally  
         result = mix(h, j, 0.5);
     }
     
-    // Apply sharpening
     let sharpened = i + (i - result) * uniforms.sharpening * w;
     
     return mix(i, sharpened, w);
@@ -177,7 +213,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 </file>
 
 <file path="src/bin/daemon/shaders/lanczos.wgsl">
-// High-quality Lanczos scaling
 fn lanczos(x: f32) -> f32 {
     if abs(x) < 1e-6 {
         return 1.0;
@@ -199,7 +234,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var result = vec4<f32>(0.0);
     var weight_sum = 0.0;
     
-    // 6x6 Lanczos kernel
     for (var i = -2; i <= 3; i++) {
         for (var j = -2; j <= 3; j++) {
             let sample_coords = (base_coords + vec2<f32>(f32(i), f32(j))) / uniforms.input_size;
@@ -219,7 +253,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         result /= weight_sum;
     }
     
-    // Apply sharpening
     let center = textureSample(input_texture, texture_sampler, tex_coords);
     let sharpened = result + (result - center) * uniforms.sharpening;
     
@@ -228,7 +261,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 </file>
 
 <file path="src/bin/daemon/shaders/mitchell.wgsl">
-// Mitchell-Netravali cubic filter
 fn mitchell(x: f32) -> f32 {
     let b = 1.0 / 3.0;
     let c = 1.0 / 3.0;
@@ -258,7 +290,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var result = vec4<f32>(0.0);
     var weight_sum = 0.0;
     
-    // 4x4 Mitchell kernel
     for (var i = -1; i <= 2; i++) {
         for (var j = -1; j <= 2; j++) {
             let sample_coords = (base_coords + vec2<f32>(f32(i), f32(j))) / uniforms.input_size;
@@ -279,6 +310,86 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     
     return clamp(result, vec4<f32>(0.0), vec4<f32>(1.0));
+}
+</file>
+
+<file path="src/bin/daemon/wayland/fifo.rs">
+use anyhow::{anyhow, Result};
+use std::os::unix::io::{AsRawFd, RawFd};
+
+
+
+const N_SAMPLES: usize = 44100 / 25;
+
+#[derive(Debug)]
+pub struct StereoSample {
+    pub left: Vec<i16>,
+    pub right: Vec<i16>,
+}
+
+impl StereoSample {
+    fn new() -> Self {
+        Self {
+            left: vec![0; N_SAMPLES],
+            right: vec![0; N_SAMPLES],
+        }
+    }
+}
+
+
+pub struct FifoReader {
+    pub fd: RawFd,
+}
+
+impl FifoReader {
+    pub fn new(fifo_path: &str) -> Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(fifo_path)?;
+
+        Ok(Self {
+            fd: file.as_raw_fd(),
+        })
+    }
+
+    pub fn read_sample(&mut self) -> Result<Option<StereoSample>> {
+        let mut buffer = vec![0u8; N_SAMPLES * 4];
+
+        let bytes_read = unsafe {
+            libc::read(
+                self.fd,
+                buffer.as_mut_ptr() as *mut libc::c_void,
+                buffer.len(),
+            )
+        };
+
+        if bytes_read < 0 {
+            let errno = unsafe { *libc::__errno_location() };
+            if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+                return Ok(None);
+            }
+            return Err(anyhow!("Failed to read from FIFO: {}", errno));
+        }
+
+        if bytes_read == 0 {
+            return Ok(None);
+        }
+
+        let samples_read = bytes_read as usize / 4;
+        let mut stereo = StereoSample::new();
+
+        for i in 0..samples_read.min(N_SAMPLES / 2) {
+            let base = i * 4;
+            if base + 3 < buffer.len() {
+                stereo.left[i] = i16::from_le_bytes([buffer[base], buffer[base + 1]]);
+                stereo.right[i] = i16::from_le_bytes([buffer[base + 2], buffer[base + 3]]);
+            }
+        }
+
+        Ok(Some(stereo))
+    }
 }
 </file>
 
@@ -320,10 +431,22 @@ impl Vertex {
 
 #[allow(dead_code)]
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-1.0, 1.0], tex_coords: [0.0, 0.0] },   // Top-left
-    Vertex { position: [-1.0, -1.0], tex_coords: [0.0, 1.0] },  // Bottom-left
-    Vertex { position: [1.0, -1.0], tex_coords: [1.0, 1.0] },   // Bottom-right
-    Vertex { position: [1.0, 1.0], tex_coords: [1.0, 0.0] },    // Top-right
+    Vertex {
+        position: [-1.0, 1.0],
+        tex_coords: [0.0, 0.0],
+    },
+    Vertex {
+        position: [-1.0, -1.0],
+        tex_coords: [0.0, 1.0],
+    },
+    Vertex {
+        position: [1.0, -1.0],
+        tex_coords: [1.0, 1.0],
+    },
+    Vertex {
+        position: [1.0, 1.0],
+        tex_coords: [1.0, 0.0],
+    },
 ];
 
 #[allow(dead_code)]
@@ -331,10 +454,10 @@ const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 #[derive(Debug, Clone, Copy)]
 pub enum ScalingAlgorithm {
-    FSR,        // FidelityFX Super Resolution
-    Lanczos,    // High-quality Lanczos
-    Mitchell,   // Mitchell-Netravali filter
-    Bicubic,    // Bicubic interpolation
+    FSR,
+    Lanczos,
+    Mitchell,
+    Bicubic,
 }
 
 #[allow(dead_code)]
@@ -365,7 +488,11 @@ struct ScalingUniforms {
 impl LosslessScaler {
     #[allow(dead_code)]
     pub async fn new(algorithm: ScalingAlgorithm) -> Result<Self> {
-        tracing::info!(event = "lossless_scaler_init", ?algorithm, "Initializing lossless scaler");
+        tracing::info!(
+            event = "lossless_scaler_init",
+            ?algorithm,
+            "Initializing lossless scaler"
+        );
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -431,11 +558,12 @@ impl LosslessScaler {
             label: Some("Lossless Scaling Bind Group Layout"),
         });
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Lossless Scaling Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Lossless Scaling Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Lossless Scaling Pipeline"),
@@ -503,7 +631,11 @@ impl LosslessScaler {
             mapped_at_creation: false,
         });
 
-        tracing::info!(event = "lossless_scaler_ready", ?algorithm, "Lossless scaler initialized");
+        tracing::info!(
+            event = "lossless_scaler_ready",
+            ?algorithm,
+            "Lossless scaler initialized"
+        );
 
         Ok(Self {
             device,
@@ -581,7 +713,8 @@ impl LosslessScaler {
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let scale_factor = (output_width as f32 / input_width as f32).max(output_height as f32 / input_height as f32);
+        let scale_factor = (output_width as f32 / input_width as f32)
+            .max(output_height as f32 / input_height as f32);
 
         let uniforms = ScalingUniforms {
             input_size: [input_width as f32, input_height as f32],
@@ -592,7 +725,8 @@ impl LosslessScaler {
             _padding: 0.0,
         };
 
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.bind_group_layout,
@@ -613,9 +747,11 @@ impl LosslessScaler {
             label: Some("Scaling Bind Group"),
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Scaling Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Scaling Encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -744,131 +880,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {{
 {algorithm_specific}
 "#
         )
-    }
-}
-</file>
-
-<file path="shaders/plasma.frag">
-#ifdef GL_ES
-precision mediump float;
-#endif
-
-uniform float time;
-uniform vec2 resolution;
-varying vec2 texCoords;
-
-void main() {
-    vec2 uv = texCoords;
-    vec2 p = (uv - 0.5) * vec2(resolution.x/resolution.y, 1.0) * 2.0;
-
-    float v1 = sin(p.x * 3.0 + time);
-    float v2 = sin((p.x * cos(time*0.7) + p.y * sin(time*0.3)) * 4.0);
-    float v3 = sin(length(p) * 5.0 - time * 1.5);
-
-    float v = (v1 + v2 + v3) / 3.0;
-
-    vec3 col = vec3(
-        0.5 + 0.5 * sin(3.0 + v * 3.0),
-        0.5 + 0.5 * sin(1.0 + v * 3.0),
-        0.5 + 0.5 * sin(5.0 + v * 3.0)
-    );
-
-    gl_FragColor = vec4(col, 1.0);
-}
-</file>
-
-<file path="shaders/rainbow.frag">
-#version 100
-precision mediump float;
-
-uniform float time;
-uniform vec2 resolution;
-
-void main() {
-    vec2 uv = gl_FragCoord.xy / resolution;
-
-    float wave = 0.5 + 0.5 * sin(uv.x * 10.0 + time);
-
-    gl_FragColor = vec4(uv.x, uv.y, wave, 1.0);
-}
-</file>
-
-<file path="src/bin/daemon/wayland/fifo.rs">
-use anyhow::{anyhow, Result};
-use std::os::unix::io::{AsRawFd, RawFd};
-
-
-
-const N_SAMPLES: usize = 44100 / 25;
-
-#[derive(Debug)]
-pub struct StereoSample {
-    pub left: Vec<i16>,
-    pub right: Vec<i16>,
-}
-
-impl StereoSample {
-    fn new() -> Self {
-        Self {
-            left: vec![0; N_SAMPLES],
-            right: vec![0; N_SAMPLES],
-        }
-    }
-}
-
-
-pub struct FifoReader {
-    pub fd: RawFd,
-}
-
-impl FifoReader {
-    pub fn new(fifo_path: &str) -> Result<Self> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(fifo_path)?;
-
-        Ok(Self {
-            fd: file.as_raw_fd(),
-        })
-    }
-
-    pub fn read_sample(&mut self) -> Result<Option<StereoSample>> {
-        let mut buffer = vec![0u8; N_SAMPLES * 4];
-
-        let bytes_read = unsafe {
-            libc::read(
-                self.fd,
-                buffer.as_mut_ptr() as *mut libc::c_void,
-                buffer.len(),
-            )
-        };
-
-        if bytes_read < 0 {
-            let errno = unsafe { *libc::__errno_location() };
-            if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-                return Ok(None);
-            }
-            return Err(anyhow!("Failed to read from FIFO: {}", errno));
-        }
-
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        let samples_read = bytes_read as usize / 4;
-        let mut stereo = StereoSample::new();
-
-        for i in 0..samples_read.min(N_SAMPLES / 2) {
-            let base = i * 4;
-            if base + 3 < buffer.len() {
-                stereo.left[i] = i16::from_le_bytes([buffer[base], buffer[base + 1]]);
-                stereo.right[i] = i16::from_le_bytes([buffer[base + 2], buffer[base + 3]]);
-            }
-        }
-
-        Ok(Some(stereo))
     }
 }
 </file>
@@ -1271,71 +1282,6 @@ fn main() {
 }
 </file>
 
-<file path="src/bin/daemon/utils.rs">
-use std::thread;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-pub fn get_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
-pub fn sleep_millis(millis: u64) {
-    if millis > 0 {
-        thread::sleep(Duration::from_millis(millis));
-    }
-}
-
-pub fn default_shader() -> &'static str {
-    r#"
-#ifdef GL_ES
-precision highp float;
-#endif
-
-uniform sampler2D u_media;
-uniform vec2 u_resolution;
-uniform float u_time;
-
-varying vec2 texCoords;
-
-void main() {
-    vec2 uv = texCoords;
-    
-    // High-quality scaling with subtle animation
-    float scale = 1.0 + 0.005 * sin(u_time * 1.5);
-    vec2 center = vec2(0.5);
-    uv = (uv - center) * scale + center;
-    
-    // Ensure UV coordinates stay within bounds
-    uv = clamp(uv, 0.0, 1.0);
-    
-    // Sample texture with high precision
-    vec4 color = texture2D(u_media, uv);
-    
-    // Preserve original color fidelity
-    gl_FragColor = color;
-}
-"#
-}
-
-pub fn vertex_shader() -> &'static str {
-    r#"
-#version 100
-attribute highp vec2 datIn;
-attribute highp vec2 texIn;
-varying highp vec2 texCoords;
-
-void main() {
-    texCoords = texIn;
-    gl_Position = vec4(datIn, 0.0, 1.0);
-}
-"#
-}
-</file>
-
 <file path="src/ui/components/mod.rs">
 pub mod lib_popup;
 pub mod panel;
@@ -1659,62 +1605,68 @@ fn create_preview<'a>(
 }
 </file>
 
-<file path="src/ui/ipc.rs">
-use anyhow::Result;
-use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+<file path="src/bin/daemon/utils.rs">
+use std::thread;
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use tracing::info;
-const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
-
-pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
-    let cmd = json!({
-        "SetImage": {
-            "path": path,
-            "shader": shader,
-            "monitor": monitor
-        }
-    });
-    send_command(cmd)
+pub fn get_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
-pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Result<()> {
-    let cmd = json!({
-        "SetVideo": {
-            "path": path,
-            "shader": shader,
-            // "monitor": monitor
-        }
-    });
-    send_command(cmd)
+pub fn sleep_millis(millis: u64) {
+    if millis > 0 {
+        thread::sleep(Duration::from_millis(millis));
+    }
 }
 
-pub fn set_shader(monitor: String, path: String) -> Result<()> {
-    let cmd = json!({
-        "SetShader": {
-            "path": path,
-            "monitor": monitor
-        }
-    });
-    send_command(cmd)
+pub fn default_shader() -> &'static str {
+    r#"
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform sampler2D u_media;
+uniform vec2 u_resolution;
+uniform float u_time;
+
+varying vec2 texCoords;
+
+void main() {
+    vec2 uv = texCoords;
+    
+    // High-quality scaling with subtle animation
+    float scale = 1.0 + 0.005 * sin(u_time * 1.5);
+    vec2 center = vec2(0.5);
+    uv = (uv - center) * scale + center;
+    
+    // Ensure UV coordinates stay within bounds
+    uv = clamp(uv, 0.0, 1.0);
+    
+    // Sample texture with high precision
+    vec4 color = texture2D(u_media, uv);
+    
+    // Preserve original color fidelity
+    gl_FragColor = color;
+}
+"#
 }
 
+pub fn vertex_shader() -> &'static str {
+    r#"
+#version 100
+attribute highp vec2 datIn;
+attribute highp vec2 texIn;
+varying highp vec2 texCoords;
 
-fn send_command(cmd: serde_json::Value) -> Result<()> {
-    tracing::debug!(event = "ui_send_cmd", cmd = %cmd, "Sending IPC command");
-
-    let mut stream = UnixStream::connect(SOCKET_PATH)?;
-    writeln!(stream, "{}", cmd)?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-
-    info!("{}", response.trim());
-    tracing::debug!(event = "ui_recv_reply", reply = %response.trim(), "Received IPC reply");
-    Ok(())
+void main() {
+    texCoords = texIn;
+    gl_Position = vec4(datIn, 0.0, 1.0);
+}
+"#
 }
 </file>
 
@@ -1821,6 +1773,65 @@ fn main() -> Result<()> {
     reader.read_line(&mut response)?;
 
     println!("{}", response.trim());
+    Ok(())
+}
+</file>
+
+<file path="src/ui/ipc.rs">
+use anyhow::Result;
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+use tracing::info;
+const SOCKET_PATH: &str = "/tmp/papyrust-daemon.sock";
+
+pub fn set_image(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+    let cmd = json!({
+        "SetImage": {
+            "path": path,
+            "shader": shader,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Result<()> {
+    let cmd = json!({
+        "SetVideo": {
+            "path": path,
+            "shader": shader,
+            // "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+pub fn set_shader(monitor: String, path: String) -> Result<()> {
+    let cmd = json!({
+        "SetShader": {
+            "path": path,
+            "monitor": monitor
+        }
+    });
+    send_command(cmd)
+}
+
+
+fn send_command(cmd: serde_json::Value) -> Result<()> {
+    tracing::debug!(event = "ui_send_cmd", cmd = %cmd, "Sending IPC command");
+
+    let mut stream = UnixStream::connect(SOCKET_PATH)?;
+    writeln!(stream, "{}", cmd)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    info!("{}", response.trim());
+    tracing::debug!(event = "ui_recv_reply", reply = %response.trim(), "Received IPC reply");
     Ok(())
 }
 </file>
@@ -2339,7 +2350,10 @@ pub fn create_monitor_state(
     );
 
     let layer_surface_id = layer_surface.id().protocol_id();
-    let output_name = output_info.name.clone().unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
+    let output_name = output_info
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
 
     tracing::info!(
         event = "layer_surface_create",
@@ -2356,7 +2370,7 @@ pub fn create_monitor_state(
             | zwlr_layer_surface_v1::Anchor::Right
             | zwlr_layer_surface_v1::Anchor::Bottom,
     );
-    
+
     surface.commit();
 
     let display_ptr = conn.display().id().as_ptr();
@@ -2399,10 +2413,9 @@ pub fn create_monitor_state(
 
     let initial_width = 100;
     let initial_height = 100;
-    
-    let egl_window =
-        wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
-            .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
+
+    let egl_window = wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
+        .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
 
     let egl_surface = unsafe {
         egl_instance.create_window_surface(
@@ -2485,7 +2498,7 @@ use std::ffi::{CStr, CString};
 use wayland_client::protocol::wl_output;
 
 use crate::gl_bindings as gl;
-use crate::media::{load_texture, MediaType, VideoDecoder, load_shader};
+use crate::media::{MediaType, VideoDecoder, load_shader, load_texture};
 use crate::utils::{default_shader, vertex_shader};
 
 pub struct MediaRenderer {
@@ -2609,12 +2622,8 @@ impl MediaRenderer {
         let media_h = self.media_height as f32;
 
         if media_w <= 0.0 || media_h <= 0.0 {
-            // Default fullscreen quad when no media dimensions
             let verts: [f32; 16] = [
-                -1.0, 1.0, 0.0, 0.0, 
-                -1.0, -1.0, 0.0, 1.0, 
-                1.0, -1.0, 1.0, 1.0, 
-                1.0, 1.0, 1.0, 0.0,
+                -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
             ];
 
             unsafe {
@@ -2629,35 +2638,29 @@ impl MediaRenderer {
             return;
         }
 
-        // Calculate scaling to fill the entire screen (crop to fit)
         let media_aspect = media_w / media_h;
         let output_aspect = output_w / output_h;
-        
+
         let (scale_x, scale_y) = if media_aspect > output_aspect {
-            // Media is wider - scale to fill height, crop width
             let scale = output_h / media_h;
             let scaled_width = media_w * scale;
             let overflow = (scaled_width - output_w) / output_w;
             (1.0 + overflow, 1.0)
         } else {
-            // Media is taller - scale to fill width, crop height
             let scale = output_w / media_w;
             let scaled_height = media_h * scale;
             let overflow = (scaled_height - output_h) / output_h;
             (1.0, 1.0 + overflow)
         };
 
-        // Create fullscreen quad with proper texture coordinates for cropping
         let u_min = (1.0 - 1.0 / scale_x) * 0.5;
         let u_max = 1.0 - u_min;
         let v_min = (1.0 - 1.0 / scale_y) * 0.5;
         let v_max = 1.0 - v_min;
 
         let verts: [f32; 16] = [
-            -1.0, 1.0, u_min, v_min,  // Top-left
-            -1.0, -1.0, u_min, v_max, // Bottom-left  
-            1.0, -1.0, u_max, v_max,  // Bottom-right
-            1.0, 1.0, u_max, v_min,   // Top-right
+            -1.0, 1.0, u_min, v_min, -1.0, -1.0, u_min, v_max, 1.0, -1.0, u_max, v_max, 1.0, 1.0,
+            u_max, v_min,
         ];
 
         unsafe {
@@ -2669,15 +2672,6 @@ impl MediaRenderer {
                 gl::STATIC_DRAW,
             );
         }
-
-        tracing::debug!(
-            event = "geometry_updated",
-            media_w, media_h, output_w, output_h,
-            scale_x, scale_y,
-            u_range = format!("{:.3}-{:.3}", u_min, u_max),
-            v_range = format!("{:.3}-{:.3}", v_min, v_max),
-            "Updated geometry for fullscreen scaling"
-        );
     }
 
     fn default_shader() -> Result<u32> {
@@ -2942,10 +2936,7 @@ impl MediaRenderer {
 
     fn setup_geometry() -> Result<(u32, u32)> {
         let vertices: [f32; 16] = [
-            -1.0, 1.0, 0.0, 0.0, 
-            -1.0, -1.0, 0.0, 1.0, 
-            1.0, -1.0, 1.0, 1.0, 
-            1.0, 1.0, 1.0, 0.0,
+            -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
         ];
 
         let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
@@ -3074,8 +3065,8 @@ use std::sync::mpsc::Receiver;
 use wayland_client::{Connection, protocol::wl_output};
 
 use crate::ipc::MediaChange;
-use crate::media::MediaType;
 use crate::lossless_scaling::ScalingAlgorithm;
+use crate::media::MediaType;
 
 mod fifo;
 mod monitors;
@@ -3387,14 +3378,13 @@ use clap::{Parser, ValueEnum};
 use std::{process, sync::mpsc, thread};
 
 use tracing_log::LogTracer;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod ipc;
+mod lossless_scaling;
 mod media;
-mod wayland;
 mod utils;
-mod lossless_scaling; // Add this line
-
+mod wayland; 
 
 mod gl_bindings {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
@@ -3492,7 +3482,10 @@ fn main() -> Result<()> {
                 libc::close(0);
                 libc::close(1);
                 libc::close(2);
-                tracing::debug!(event = "daemon_forked", "Detached from controlling terminal");
+                tracing::debug!(
+                    event = "daemon_forked",
+                    "Detached from controlling terminal"
+                );
             }
         }
     }
@@ -3586,27 +3579,31 @@ impl ImageLoader {
         unsafe {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
-            
-            // Set pixel alignment for better quality
+
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
-            
-            // High-quality texture parameters
+
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            
-            // Use high-quality filtering
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR_MIPMAP_LINEAR as i32);
+
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MIN_FILTER,
+                gl::LINEAR_MIPMAP_LINEAR as i32,
+            );
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            
-            // Enable anisotropic filtering if available
+
             let mut max_anisotropy = 0.0f32;
-            gl::GetFloatv(0x84FE, &mut max_anisotropy); // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+            gl::GetFloatv(0x84FE, &mut max_anisotropy);
             if max_anisotropy > 1.0 {
-                let anisotropy = max_anisotropy.min(16.0); // Cap at 16x
-                gl::TexParameterf(gl::TEXTURE_2D, 0x84FE, anisotropy); // GL_TEXTURE_MAX_ANISOTROPY_EXT
-                tracing::debug!(event = "anisotropic_filtering", anisotropy, "Applied anisotropic filtering");
+                let anisotropy = max_anisotropy.min(16.0);
+                gl::TexParameterf(gl::TEXTURE_2D, 0x84FE, anisotropy);
+                tracing::debug!(
+                    event = "anisotropic_filtering",
+                    anisotropy,
+                    "Applied anisotropic filtering"
+                );
             }
-            
+
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
@@ -3618,33 +3615,44 @@ impl ImageLoader {
                 gl::UNSIGNED_BYTE,
                 rgba.as_ptr() as *const _,
             );
-            
-            // Generate mipmaps for better quality at different scales
+
             gl::GenerateMipmap(gl::TEXTURE_2D);
-            
-            tracing::debug!(event = "texture_created", width, height, texture, "High-quality texture created with mipmaps");
+
+            tracing::debug!(
+                event = "texture_created",
+                width,
+                height,
+                texture,
+                "High-quality texture created with mipmaps"
+            );
         }
 
         Ok(texture)
     }
 
     #[allow(dead_code)]
-    pub fn load_texture_scaled(&self, path: &str, target_width: u32, target_height: u32, sharpening: f32) -> Result<u32> {
+    pub fn load_texture_scaled(
+        &self,
+        path: &str,
+        target_width: u32,
+        target_height: u32,
+        sharpening: f32,
+    ) -> Result<u32> {
         if let Some(ref scaler) = self._scaler {
             tracing::info!(
-                event = "image_load_scaled", 
-                path = %path, 
-                target_width, 
+                event = "image_load_scaled",
+                path = %path,
+                target_width,
                 target_height,
                 sharpening,
                 "Loading and scaling image with lossless algorithm"
             );
 
-            let img = image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
+            let img =
+                image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
             let rgba = img.to_rgba8();
             let (orig_width, orig_height) = (img.width(), img.height());
 
-            // Only scale if necessary
             let final_data = if orig_width != target_width || orig_height != target_height {
                 let scaled_data = scaler.scale_texture(
                     &rgba,
@@ -3664,12 +3672,12 @@ impl ImageLoader {
                 gl::GenTextures(1, &mut texture);
                 gl::BindTexture(gl::TEXTURE_2D, texture);
                 gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
-                
+
                 gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
                 gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
                 gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
                 gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-                
+
                 gl::TexImage2D(
                     gl::TEXTURE_2D,
                     0,
@@ -3684,9 +3692,11 @@ impl ImageLoader {
             }
 
             tracing::debug!(
-                event = "scaled_texture_created", 
-                orig_width, orig_height,
-                target_width, target_height,
+                event = "scaled_texture_created",
+                orig_width,
+                orig_height,
+                target_width,
+                target_height,
                 texture,
                 "Lossless scaled texture created"
             );
@@ -3733,12 +3743,20 @@ impl VideoDecoder {
     }
 
     #[allow(dead_code)]
-    pub async fn new_with_lossless_scaling(path: &str, forced_fps: Option<f64>, algorithm: ScalingAlgorithm) -> Result<Self> {
+    pub async fn new_with_lossless_scaling(
+        path: &str,
+        forced_fps: Option<f64>,
+        algorithm: ScalingAlgorithm,
+    ) -> Result<Self> {
         let scaler = LosslessScaler::new(algorithm).await?;
         Self::new_with_scaler(path, forced_fps, Some(Arc::new(scaler)))
     }
 
-    fn new_with_scaler(path: &str, forced_fps: Option<f64>, lossless_scaler: Option<Arc<LosslessScaler>>) -> Result<Self> {
+    fn new_with_scaler(
+        path: &str,
+        forced_fps: Option<f64>,
+        lossless_scaler: Option<Arc<LosslessScaler>>,
+    ) -> Result<Self> {
         let fps_msg = if let Some(fps) = forced_fps {
             format!("forced FPS: {:.1}", fps)
         } else {
@@ -3838,7 +3856,7 @@ impl VideoDecoder {
                     ffmpeg::format::Pixel::RGBA,
                     width,
                     height,
-                    ffmpeg::software::scaling::flag::Flags::LANCZOS, // Use higher quality scaling
+                    ffmpeg::software::scaling::flag::Flags::LANCZOS,
                 )
                 .map_err(|e| anyhow!("Failed to create scaler: {}", e))?,
             )
@@ -3851,13 +3869,12 @@ impl VideoDecoder {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-            
-            // High-quality texture parameters for video
+
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            
+
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
@@ -4051,7 +4068,13 @@ impl VideoDecoder {
     }
 
     #[allow(dead_code)]
-    pub fn scale_frame_with_lossless(&self, frame_data: &[u8], target_width: u32, target_height: u32, sharpening: f32) -> Result<Vec<u8>> {
+    pub fn scale_frame_with_lossless(
+        &self,
+        frame_data: &[u8],
+        target_width: u32,
+        target_height: u32,
+        sharpening: f32,
+    ) -> Result<Vec<u8>> {
         if let Some(ref scaler) = self._lossless_scaler {
             scaler.scale_texture(
                 frame_data,
@@ -4083,7 +4106,6 @@ impl VideoDecoder {
     }
 }
 
-// Thread-safe ImageLoader instance using OnceLock
 static IMAGE_LOADER: OnceLock<ImageLoader> = OnceLock::new();
 
 fn get_image_loader() -> &'static ImageLoader {
