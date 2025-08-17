@@ -1,6 +1,4 @@
 use crate::gl_bindings as gl;
-use anyhow::{Result, anyhow};
-use std::ffi::{CStr, CString};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -84,94 +82,6 @@ void main() {
     gl_Position = vec4(datIn, 0.0, 1.0);
 }
 "#
-}
-
-pub fn compile_shader(vert_source: &str, frag_source: &str) -> Result<u32> {
-    unsafe {
-        let program = gl::CreateProgram();
-        check_gl_error("CreateProgram");
-
-        let vert_shader = gl::CreateShader(gl::VERTEX_SHADER);
-        check_gl_error("CreateShader vertex");
-        let vert_c_str = CString::new(vert_source)?;
-        gl::ShaderSource(vert_shader, 1, &vert_c_str.as_ptr(), std::ptr::null());
-        gl::CompileShader(vert_shader);
-        check_gl_error("CompileShader vertex");
-        check_shader_compile(vert_shader, "vertex")?;
-
-        let frag_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
-        check_gl_error("CreateShader fragment");
-        let frag_c_str = CString::new(frag_source)?;
-        gl::ShaderSource(frag_shader, 1, &frag_c_str.as_ptr(), std::ptr::null());
-        gl::CompileShader(frag_shader);
-        check_gl_error("CompileShader fragment");
-        check_shader_compile(frag_shader, "fragment")?;
-
-        gl::AttachShader(program, vert_shader);
-        gl::AttachShader(program, frag_shader);
-        check_gl_error("AttachShader");
-        gl::LinkProgram(program);
-        check_gl_error("LinkProgram");
-        check_program_link(program)?;
-
-        gl::DeleteShader(vert_shader);
-        gl::DeleteShader(frag_shader);
-        check_gl_error("DeleteShader");
-
-        tracing::debug!(
-            event = "shader_compiled",
-            program,
-            "Successfully compiled and linked shader program"
-        );
-
-        Ok(program)
-    }
-}
-
-fn check_shader_compile(shader: u32, shader_type: &str) -> Result<()> {
-    unsafe {
-        let mut status = 0;
-        gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut status);
-        if status == gl::FALSE as i32 {
-            let mut log_length = 0;
-            gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_length);
-            let mut log = vec![0u8; log_length as usize];
-            gl::GetShaderInfoLog(
-                shader,
-                log_length,
-                std::ptr::null_mut(),
-                log.as_mut_ptr() as *mut i8,
-            );
-            let log_str = CStr::from_ptr(log.as_ptr() as *const i8).to_string_lossy();
-            return Err(anyhow!(
-                "{} shader compilation failed: {}",
-                shader_type,
-                log_str
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn check_program_link(program: u32) -> Result<()> {
-    unsafe {
-        let mut status = 0;
-        gl::GetProgramiv(program, gl::LINK_STATUS, &mut status);
-        if status == gl::FALSE as i32 {
-            let mut log_length = 0;
-            gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut log_length);
-            let mut log = vec![0u8; log_length as usize];
-            gl::GetProgramInfoLog(
-                program,
-                log_length,
-                std::ptr::null_mut(),
-                log.as_mut_ptr() as *mut i8,
-            );
-            let log_str = CStr::from_ptr(log.as_ptr() as *const i8).to_string_lossy();
-            return Err(anyhow!("Program linking failed: {}", log_str));
-        }
-    }
-    Ok(())
 }
 
 pub fn prepare_shader_source(raw_shader: &str) -> String {

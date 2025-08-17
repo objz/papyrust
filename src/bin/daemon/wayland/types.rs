@@ -1,16 +1,13 @@
-use wayland_client::protocol::wl_output;
-use khronos_egl as egl;
 use super::audio::fifo::FifoReader;
+use khronos_egl as egl;
+use wayland_client::protocol::wl_output;
 
-/// Unique identifier for outputs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OutputId(pub u32);
 
-/// Unique identifier for surfaces  
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SurfaceId(pub u32);
 
-/// Display configuration for an output
 #[derive(Debug, Clone)]
 pub struct DisplayConfig {
     pub width: u32,
@@ -21,7 +18,6 @@ pub struct DisplayConfig {
     pub logical_height: Option<u32>,
 }
 
-/// Information about a Wayland output
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
     pub output: wl_output::WlOutput,
@@ -29,14 +25,12 @@ pub struct OutputInfo {
     pub name: Option<String>,
 }
 
-/// Rendering context passed to draw operations
 pub struct RenderContext<'a> {
     pub width: i32,
     pub height: i32,
     pub fifo_reader: Option<&'a mut FifoReader>,
 }
 
-/// EGL resources for a surface
 pub struct EglResources {
     pub display: egl::Display,
     pub surface: egl::Surface,
@@ -44,7 +38,6 @@ pub struct EglResources {
     pub config: egl::Config,
 }
 
-/// Configuration for the Wayland subsystem
 #[derive(Debug, Clone)]
 pub struct WaylandConfig {
     pub fps: u16,

@@ -1,20 +1,16 @@
 use anyhow::{Result, anyhow};
 use ffmpeg_next as ffmpeg;
 use std::path::Path;
-use crate::gl_bindings as gl;
-use crate::media::{MediaHandler, shader::ShaderHandler};
-use crate::utils::{vertex_shader, default_shader, compile_shader};
+use crate::gl_utils::GlTexture;
+use crate::media::{MediaHandler, BaseMediaHandler};
 
 pub struct VideoHandler {
+    base: BaseMediaHandler,
     decoder: ffmpeg::decoder::Video,
     scaler: Option<ffmpeg::software::scaling::Context>,
-    texture: u32,
-    width: u32,
-    height: u32,
     input_ctx: ffmpeg::format::context::Input,
     stream_index: usize,
     video_path: String,
-    last_frame_updated: bool,
     time_base: f64,
     playback_start_time: f64,
     forced_fps: Option<f64>,
@@ -28,7 +24,6 @@ pub struct VideoHandler {
     loop_count: u64,
     first_pts: Option<i64>,
     frame_count: u64,
-    shader_program: u32,
 }
 
 impl VideoHandler {
@@ -114,24 +109,18 @@ impl VideoHandler {
             None
         };
 
-        let texture = Self::create_texture(width, height)?;
-
-        let shader_program = if let Some(shader_path) = shader_path {
-            ShaderHandler::create_media_shader(shader_path)?
-        } else {
-            Self::create_default_shader()?
-        };
+        let mut base = BaseMediaHandler::new_with_shader(shader_path)?;
+        let texture = GlTexture::new(width, height)?;
+        base.dimensions = (width, height);
+        base.texture = Some(texture);
 
         Ok(Self {
+            base,
             decoder,
             scaler,
-            texture,
-            width,
-            height,
             input_ctx,
             stream_index,
             video_path: path.to_string(),
-            last_frame_updated: false,
             time_base,
             playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
             forced_fps,
@@ -145,12 +134,7 @@ impl VideoHandler {
             loop_count: 0,
             first_pts: None,
             frame_count: 0,
-            shader_program,
         })
-    }
-
-    pub fn get_shader_program(&self) -> u32 {
-        self.shader_program
     }
 
     fn detect_fps(stream: &ffmpeg::format::stream::Stream, time_base: f64) -> f64 {
@@ -196,41 +180,8 @@ impl VideoHandler {
         detected_fps
     }
 
-    fn create_texture(width: u32, height: u32) -> Result<u32> {
-        let mut texture = 0;
-        unsafe {
-            gl::GenTextures(1, &mut texture);
-            gl::BindTexture(gl::TEXTURE_2D, texture);
-            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-
-            gl::TexImage2D(
-                gl::TEXTURE_2D,
-                0,
-                gl::RGBA as i32,
-                width as i32,
-                height as i32,
-                0,
-                gl::RGBA,
-                gl::UNSIGNED_BYTE,
-                std::ptr::null(),
-            );
-        }
-        Ok(texture)
-    }
-
-    fn create_default_shader() -> Result<u32> {
-        let vert_source = vertex_shader();
-        let frag_source = default_shader();
-        compile_shader(vert_source, frag_source)
-    }
-
     fn update_frame(&mut self) -> Result<bool> {
-        self.last_frame_updated = false;
+        self.base.has_new_frame = false;
         let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
         let playback_time = current_time - self.playback_start_time;
 
@@ -254,19 +205,21 @@ impl VideoHandler {
         };
 
         if should_display_next && self.next_frame.is_some() {
-            self.current_frame = self.next_frame.take();
+            let frame = self.next_frame.take();
+            self.current_frame = frame;
             self.current_frame_pts = self.next_frame_pts.take();
 
-            if let Some(ref frame) = self.current_frame {
-                self.upload_frame(frame);
-                self.last_frame_updated = true;
+            if let Some(current_frame) = self.current_frame.take() {
+                self.upload_frame(&current_frame);
+                self.current_frame = Some(current_frame); 
+                self.base.has_new_frame = true;
                 self.frame_count += 1;
-
-                self.decode_next_frame()?;
             }
+
+            self.decode_next_frame()?;
         }
 
-        Ok(self.last_frame_updated)
+        Ok(self.base.has_new_frame)
     }
 
     fn pts_to_time(&self, pts: i64) -> f64 {
@@ -309,13 +262,6 @@ impl VideoHandler {
 
             self.restart_video()?;
             self.decode_frame_to_buffer()?;
-
-            tracing::debug!(
-                event = "video_loop_timing",
-                expected_duration = expected_loop_duration,
-                new_start_time = self.playback_start_time,
-                "Adjusted timing for seamless loop"
-            );
         }
         Ok(())
     }
@@ -385,21 +331,9 @@ impl VideoHandler {
         }
     }
 
-    fn upload_frame(&self, frame: &ffmpeg::frame::Video) {
-        unsafe {
-            gl::BindTexture(gl::TEXTURE_2D, self.texture);
-            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
-            gl::TexSubImage2D(
-                gl::TEXTURE_2D,
-                0,
-                0,
-                0,
-                frame.width() as i32,
-                frame.height() as i32,
-                gl::RGBA,
-                gl::UNSIGNED_BYTE,
-                frame.data(0).as_ptr() as *const _,
-            );
+    fn upload_frame(&mut self, frame: &ffmpeg::frame::Video) {
+        if let Some(ref texture) = self.base.texture {
+            texture.update_data(frame.data(0));
         }
     }
 
@@ -430,12 +364,12 @@ impl VideoHandler {
 }
 
 impl MediaHandler for VideoHandler {
-    fn get_texture(&self) -> Option<u32> {
-        Some(self.texture)
+    fn get_texture(&self) -> Option<&GlTexture> {
+        self.base.texture.as_ref()
     }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        self.base.dimensions
     }
 
     fn update(&mut self) -> Result<bool> {
@@ -443,15 +377,10 @@ impl MediaHandler for VideoHandler {
     }
 
     fn has_new_frame(&self) -> bool {
-        self.last_frame_updated
+        self.base.has_new_frame
     }
-}
 
-impl Drop for VideoHandler {
-    fn drop(&mut self) {
-        unsafe {
-            gl::DeleteTextures(1, &self.texture);
-            gl::DeleteProgram(self.shader_program);
-        }
+    fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
+        &self.base.shader_program
     }
 }

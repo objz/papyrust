@@ -5,6 +5,7 @@ use std::{process, sync::mpsc, thread};
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, fmt};
 
+mod gl_utils;
 mod ipc;
 mod media;
 mod utils;
@@ -93,7 +94,7 @@ fn main() -> Result<()> {
         mute = args.mute,
         scaling = ?args.scaling,
         sharpening = args.sharpening,
-        "Starting Papyrust daemon with lossless scaling"
+        "Starting Papyrust daemon with unified resource management"
     );
 
     if args.fork {
