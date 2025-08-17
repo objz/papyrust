@@ -3,8 +3,10 @@ use ffmpeg_next as ffmpeg;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use crate::gl_bindings as gl;
+use crate::lossless_scaling::{LosslessScaler, ScalingAlgorithm};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaType {
@@ -19,10 +21,24 @@ pub enum MediaType {
     },
 }
 
-pub struct ImageLoader;
+pub struct ImageLoader {
+    _scaler: Option<Arc<LosslessScaler>>,
+}
 
 impl ImageLoader {
-    pub fn load_texture(path: &str) -> Result<u32> {
+    pub fn new() -> Self {
+        Self { _scaler: None }
+    }
+
+    #[allow(dead_code)]
+    pub async fn new_with_scaler(algorithm: ScalingAlgorithm) -> Result<Self> {
+        let scaler = LosslessScaler::new(algorithm).await?;
+        Ok(Self {
+            _scaler: Some(Arc::new(scaler)),
+        })
+    }
+
+    pub fn load_texture(&self, path: &str) -> Result<u32> {
         tracing::info!(event = "image_load", path = %path, "Loading image");
 
         let img = image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
@@ -35,11 +51,31 @@ impl ImageLoader {
         unsafe {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
-            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
+
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MIN_FILTER,
+                gl::LINEAR_MIPMAP_LINEAR as i32,
+            );
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+
+            let mut max_anisotropy = 0.0f32;
+            gl::GetFloatv(0x84FE, &mut max_anisotropy);
+            if max_anisotropy > 1.0 {
+                let anisotropy = max_anisotropy.min(16.0);
+                gl::TexParameterf(gl::TEXTURE_2D, 0x84FE, anisotropy);
+                tracing::debug!(
+                    event = "anisotropic_filtering",
+                    anisotropy,
+                    "Applied anisotropic filtering"
+                );
+            }
+
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
@@ -51,9 +87,96 @@ impl ImageLoader {
                 gl::UNSIGNED_BYTE,
                 rgba.as_ptr() as *const _,
             );
+
+            gl::GenerateMipmap(gl::TEXTURE_2D);
+
+            tracing::debug!(
+                event = "texture_created",
+                width,
+                height,
+                texture,
+                "High-quality texture created with mipmaps"
+            );
         }
 
         Ok(texture)
+    }
+
+    #[allow(dead_code)]
+    pub fn load_texture_scaled(
+        &self,
+        path: &str,
+        target_width: u32,
+        target_height: u32,
+        sharpening: f32,
+    ) -> Result<u32> {
+        if let Some(ref scaler) = self._scaler {
+            tracing::info!(
+                event = "image_load_scaled",
+                path = %path,
+                target_width,
+                target_height,
+                sharpening,
+                "Loading and scaling image with lossless algorithm"
+            );
+
+            let img =
+                image::open(path).map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
+            let rgba = img.to_rgba8();
+            let (orig_width, orig_height) = (img.width(), img.height());
+
+            let final_data = if orig_width != target_width || orig_height != target_height {
+                let scaled_data = scaler.scale_texture(
+                    &rgba,
+                    orig_width,
+                    orig_height,
+                    target_width,
+                    target_height,
+                    sharpening,
+                )?;
+                scaled_data
+            } else {
+                rgba.into_raw()
+            };
+
+            let mut texture = 0;
+            unsafe {
+                gl::GenTextures(1, &mut texture);
+                gl::BindTexture(gl::TEXTURE_2D, texture);
+                gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
+
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+
+                gl::TexImage2D(
+                    gl::TEXTURE_2D,
+                    0,
+                    gl::RGBA as i32,
+                    target_width as i32,
+                    target_height as i32,
+                    0,
+                    gl::RGBA,
+                    gl::UNSIGNED_BYTE,
+                    final_data.as_ptr() as *const _,
+                );
+            }
+
+            tracing::debug!(
+                event = "scaled_texture_created",
+                orig_width,
+                orig_height,
+                target_width,
+                target_height,
+                texture,
+                "Lossless scaled texture created"
+            );
+
+            Ok(texture)
+        } else {
+            self.load_texture(path)
+        }
     }
 }
 
@@ -67,18 +190,19 @@ pub struct VideoDecoder {
     stream_index: usize,
     video_path: String,
     last_frame_updated: bool,
-    time_base: f64,
-    video_start_time: f64,
-    playback_start_time: f64,
+    _time_base: f64,
+    _video_start_time: f64,
+    _playback_start_time: f64,
     forced_fps: Option<f64>,
     frame_count: u64,
     last_forced_frame_time: f64,
     current_frame: Option<ffmpeg::frame::Video>,
     next_frame: Option<ffmpeg::frame::Video>,
     reached_eof: bool,
-    video_fps: f64,
-    video_duration: f64,
+    _video_fps: f64,
+    _video_duration: f64,
     loop_count: u64,
+    _lossless_scaler: Option<Arc<LosslessScaler>>,
 }
 
 impl VideoDecoder {
@@ -87,12 +211,30 @@ impl VideoDecoder {
     }
 
     pub fn new_with_fps(path: &str, forced_fps: Option<f64>) -> Result<Self> {
+        Self::new_with_scaler(path, forced_fps, None)
+    }
+
+    #[allow(dead_code)]
+    pub async fn new_with_lossless_scaling(
+        path: &str,
+        forced_fps: Option<f64>,
+        algorithm: ScalingAlgorithm,
+    ) -> Result<Self> {
+        let scaler = LosslessScaler::new(algorithm).await?;
+        Self::new_with_scaler(path, forced_fps, Some(Arc::new(scaler)))
+    }
+
+    fn new_with_scaler(
+        path: &str,
+        forced_fps: Option<f64>,
+        lossless_scaler: Option<Arc<LosslessScaler>>,
+    ) -> Result<Self> {
         let fps_msg = if let Some(fps) = forced_fps {
             format!("forced FPS: {:.1}", fps)
         } else {
             "original timing".to_string()
         };
-        tracing::info!(event = "video_open", path = %path, %fps_msg, "Initializing video decoder");
+        tracing::info!(event = "video_open", path = %path, %fps_msg, has_lossless = lossless_scaler.is_some(), "Initializing video decoder");
 
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
         let input_ctx = ffmpeg::format::input(&Path::new(path))
@@ -177,16 +319,16 @@ impl VideoDecoder {
             "Video stream initialized"
         );
 
-        let scaler = if decoder.format() != ffmpeg::format::Pixel::RGB24 {
+        let scaler = if decoder.format() != ffmpeg::format::Pixel::RGBA {
             Some(
                 ffmpeg::software::scaling::Context::get(
                     decoder.format(),
                     width,
                     height,
-                    ffmpeg::format::Pixel::RGB24,
+                    ffmpeg::format::Pixel::RGBA,
                     width,
                     height,
-                    ffmpeg::software::scaling::flag::Flags::BILINEAR,
+                    ffmpeg::software::scaling::flag::Flags::LANCZOS,
                 )
                 .map_err(|e| anyhow!("Failed to create scaler: {}", e))?,
             )
@@ -199,18 +341,20 @@ impl VideoDecoder {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
-                gl::RGB as i32,
+                gl::RGBA as i32,
                 width as i32,
                 height as i32,
                 0,
-                gl::RGB,
+                gl::RGBA,
                 gl::UNSIGNED_BYTE,
                 std::ptr::null(),
             );
@@ -226,18 +370,19 @@ impl VideoDecoder {
             stream_index,
             video_path: path.to_string(),
             last_frame_updated: false,
-            time_base,
-            video_start_time,
-            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            _time_base: time_base,
+            _video_start_time: video_start_time,
+            _playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
             forced_fps,
             frame_count: 0,
             last_forced_frame_time: crate::utils::get_time_millis() as f64 / 1000.0,
             current_frame: None,
             next_frame: None,
             reached_eof: false,
-            video_fps,
-            video_duration,
+            _video_fps: video_fps,
+            _video_duration: video_duration,
             loop_count: 0,
+            _lossless_scaler: lossless_scaler,
         })
     }
 
@@ -256,8 +401,8 @@ impl VideoDecoder {
             self.last_forced_frame_time = current_time;
         }
 
-        if let Some(ref frame) = self.current_frame {
-            if let Some(ref next_frame) = self.next_frame {
+        if self.current_frame.is_some() {
+            if self.next_frame.is_some() {
                 self.current_frame = self.next_frame.take();
                 self.upload_current_frame();
                 self.last_frame_updated = true;
@@ -311,8 +456,8 @@ impl VideoDecoder {
                 Ok(_) => {
                     let mut decoded = ffmpeg::frame::Video::empty();
                     while self.decoder.receive_frame(&mut decoded).is_ok() {
-                        let rgb_frame = self.convert_frame(decoded)?;
-                        self.next_frame = Some(rgb_frame);
+                        let rgba_frame = self.convert_frame(decoded)?;
+                        self.next_frame = Some(rgba_frame);
                         return Ok(true);
                     }
                 }
@@ -331,14 +476,14 @@ impl VideoDecoder {
     }
 
     fn convert_frame(&mut self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video> {
-        if frame.format() != ffmpeg::format::Pixel::RGB24 {
+        if frame.format() != ffmpeg::format::Pixel::RGBA {
             if let Some(ref mut scaler) = self.scaler {
-                let mut rgb_frame = ffmpeg::frame::Video::empty();
+                let mut rgba_frame = ffmpeg::frame::Video::empty();
                 scaler
-                    .run(&frame, &mut rgb_frame)
+                    .run(&frame, &mut rgba_frame)
                     .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                rgb_frame.set_pts(frame.pts());
-                Ok(rgb_frame)
+                rgba_frame.set_pts(frame.pts());
+                Ok(rgba_frame)
             } else {
                 Ok(frame)
             }
@@ -364,7 +509,7 @@ impl VideoDecoder {
                 0,
                 frame.width() as i32,
                 frame.height() as i32,
-                gl::RGB,
+                gl::RGBA,
                 gl::UNSIGNED_BYTE,
                 frame.data(0).as_ptr() as *const _,
             );
@@ -394,6 +539,28 @@ impl VideoDecoder {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    pub fn scale_frame_with_lossless(
+        &self,
+        frame_data: &[u8],
+        target_width: u32,
+        target_height: u32,
+        sharpening: f32,
+    ) -> Result<Vec<u8>> {
+        if let Some(ref scaler) = self._lossless_scaler {
+            scaler.scale_texture(
+                frame_data,
+                self._width,
+                self._height,
+                target_width,
+                target_height,
+                sharpening,
+            )
+        } else {
+            Ok(frame_data.to_vec())
+        }
+    }
+
     pub fn texture(&self) -> u32 {
         self.texture
     }
@@ -409,6 +576,16 @@ impl VideoDecoder {
     pub fn has_new_frame(&self) -> bool {
         self.last_frame_updated
     }
+}
+
+static IMAGE_LOADER: OnceLock<ImageLoader> = OnceLock::new();
+
+fn get_image_loader() -> &'static ImageLoader {
+    IMAGE_LOADER.get_or_init(|| ImageLoader::new())
+}
+
+pub fn load_texture(path: &str) -> Result<u32> {
+    get_image_loader().load_texture(path)
 }
 
 pub fn load_shader(path: &str) -> Result<String> {

@@ -18,7 +18,7 @@ pub fn sleep_millis(millis: u64) {
 pub fn default_shader() -> &'static str {
     r#"
 #ifdef GL_ES
-precision mediump float;
+precision highp float;
 #endif
 
 uniform sampler2D u_media;
@@ -29,9 +29,19 @@ varying vec2 texCoords;
 
 void main() {
     vec2 uv = texCoords;
-    float scale = 1.0 + 0.01 * sin(u_time * 2.0);
-    uv = (uv - 0.5) * scale + 0.5;
+    
+    // High-quality scaling with subtle animation
+    float scale = 1.0 + 0.005 * sin(u_time * 1.5);
+    vec2 center = vec2(0.5);
+    uv = (uv - center) * scale + center;
+    
+    // Ensure UV coordinates stay within bounds
+    uv = clamp(uv, 0.0, 1.0);
+    
+    // Sample texture with high precision
     vec4 color = texture2D(u_media, uv);
+    
+    // Preserve original color fidelity
     gl_FragColor = color;
 }
 "#
@@ -40,9 +50,9 @@ void main() {
 pub fn vertex_shader() -> &'static str {
     r#"
 #version 100
-attribute vec2 datIn;
-attribute vec2 texIn;
-varying vec2 texCoords;
+attribute highp vec2 datIn;
+attribute highp vec2 texIn;
+varying highp vec2 texCoords;
 
 void main() {
     texCoords = texIn;

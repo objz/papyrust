@@ -22,7 +22,7 @@ pub fn set_video(monitor: String, path: String, shader: Option<String>) -> Resul
         "SetVideo": {
             "path": path,
             "shader": shader,
-            "monitor": monitor
+            // "monitor": monitor
         }
     });
     send_command(cmd)

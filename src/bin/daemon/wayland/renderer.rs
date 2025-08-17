@@ -5,7 +5,7 @@ use std::ffi::{CStr, CString};
 use wayland_client::protocol::wl_output;
 
 use crate::gl_bindings as gl;
-use crate::media::{ImageLoader, MediaType, VideoDecoder, load_shader};
+use crate::media::{MediaType, VideoDecoder, load_shader, load_texture};
 use crate::utils::{default_shader, vertex_shader};
 
 pub struct MediaRenderer {
@@ -64,7 +64,7 @@ impl MediaRenderer {
                         let img = image::open(path)
                             .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
                         let (w, h) = (img.width(), img.height());
-                        let texture = ImageLoader::load_texture(path)?;
+                        let texture = load_texture(path)?;
                         let program = if let Some(s) = shader {
                             Self::create_media_shader(s)?
                         } else {
@@ -145,13 +145,29 @@ impl MediaRenderer {
             return;
         }
 
-        let scale_factor = f32::max(output_w / media_w, output_h / media_h);
-        let scaled_w = (media_w * scale_factor) / output_w;
-        let scaled_h = (media_h * scale_factor) / output_h;
+        let media_aspect = media_w / media_h;
+        let output_aspect = output_w / output_h;
+
+        let (scale_x, scale_y) = if media_aspect > output_aspect {
+            let scale = output_h / media_h;
+            let scaled_width = media_w * scale;
+            let overflow = (scaled_width - output_w) / output_w;
+            (1.0 + overflow, 1.0)
+        } else {
+            let scale = output_w / media_w;
+            let scaled_height = media_h * scale;
+            let overflow = (scaled_height - output_h) / output_h;
+            (1.0, 1.0 + overflow)
+        };
+
+        let u_min = (1.0 - 1.0 / scale_x) * 0.5;
+        let u_max = 1.0 - u_min;
+        let v_min = (1.0 - 1.0 / scale_y) * 0.5;
+        let v_max = 1.0 - v_min;
 
         let verts: [f32; 16] = [
-            -scaled_w, scaled_h, 0.0, 0.0, -scaled_w, -scaled_h, 0.0, 1.0, scaled_w, -scaled_h,
-            1.0, 1.0, scaled_w, scaled_h, 1.0, 0.0,
+            -1.0, 1.0, u_min, v_min, -1.0, -1.0, u_min, v_max, 1.0, -1.0, u_max, v_max, 1.0, 1.0,
+            u_max, v_min,
         ];
 
         unsafe {
@@ -170,7 +186,7 @@ impl MediaRenderer {
             #version 100
             attribute highp vec2 datIn;
             attribute highp vec2 texIn;
-            varying vec2 texCoords;
+            varying highp vec2 texCoords;
             void main() {
                 texCoords = texIn;
                 gl_Position = vec4(datIn, 0.0, 1.0);
@@ -215,7 +231,7 @@ impl MediaRenderer {
                     let img = image::open(path)
                         .map_err(|e| anyhow!("Failed to open image {}: {}", path, e))?;
                     let (w, h) = (img.width(), img.height());
-                    let texture = ImageLoader::load_texture(path)?;
+                    let texture = load_texture(path)?;
                     let program = if let Some(s) = shader {
                         Self::create_media_shader(s)?
                     } else {
@@ -299,7 +315,7 @@ impl MediaRenderer {
             #version 100
             attribute highp vec2 datIn;
             attribute highp vec2 texIn;
-            varying vec2 texCoords;
+            varying highp vec2 texCoords;
             void main() {
                 texCoords = texIn;
                 gl_Position = vec4(datIn, 0.0, 1.0);

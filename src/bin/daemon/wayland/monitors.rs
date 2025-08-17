@@ -13,10 +13,12 @@ pub struct MonitorState {
     pub egl_surface: egl::Surface,
     pub egl_context: egl::Context,
     pub renderer: MediaRenderer,
+    #[allow(dead_code)]
     pub output_info: OutputInfo,
     pub egl_window: wayland_egl::WlEglSurface,
     pub current_width: u32,
     pub current_height: u32,
+    #[allow(dead_code)]
     pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     pub layer_surface_id: u32,
     pub configured: bool,
@@ -56,7 +58,10 @@ pub fn create_monitor_state(
     );
 
     let layer_surface_id = layer_surface.id().protocol_id();
-    let output_name = output_info.name.clone().unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
+    let output_name = output_info
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("unknown-{}", layer_surface_id));
 
     tracing::info!(
         event = "layer_surface_create",
@@ -73,7 +78,7 @@ pub fn create_monitor_state(
             | zwlr_layer_surface_v1::Anchor::Right
             | zwlr_layer_surface_v1::Anchor::Bottom,
     );
-    
+
     surface.commit();
 
     let display_ptr = conn.display().id().as_ptr();
@@ -116,10 +121,9 @@ pub fn create_monitor_state(
 
     let initial_width = 100;
     let initial_height = 100;
-    
-    let egl_window =
-        wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
-            .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
+
+    let egl_window = wayland_egl::WlEglSurface::new(surface.id(), initial_width, initial_height)
+        .map_err(|e| anyhow!("Failed to create wl_egl_window: {e}"))?;
 
     let egl_surface = unsafe {
         egl_instance.create_window_surface(
@@ -164,33 +168,31 @@ pub fn create_monitor_state(
 }
 
 impl MonitorState {
-
-pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-    if self.current_width != width || self.current_height != height {
-        tracing::info!(
-            event = "monitor_resize",
-            output = %self.output_name,
-            surface_id = self.layer_surface_id,
-            from_width = self.current_width,
-            from_height = self.current_height,
-            to_width = width,
-            to_height = height,
-            "Applying monitor resize"
-        );
-        self.egl_window.resize(width as i32, height as i32, 0, 0);
-        self.current_width = width;
-        self.current_height = height;
-        self.configured = true;
-    } else {
-        tracing::debug!(
-            event = "monitor_resize_skipped",
-            output = %self.output_name,
-            width,
-            height,
-            "Resize skipped (dimensions unchanged)"
-        );
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        if self.current_width != width || self.current_height != height {
+            tracing::info!(
+                event = "monitor_resize",
+                output = %self.output_name,
+                surface_id = self.layer_surface_id,
+                from_width = self.current_width,
+                from_height = self.current_height,
+                to_width = width,
+                to_height = height,
+                "Applying monitor resize"
+            );
+            self.egl_window.resize(width as i32, height as i32, 0, 0);
+            self.current_width = width;
+            self.current_height = height;
+            self.configured = true;
+        } else {
+            tracing::debug!(
+                event = "monitor_resize_skipped",
+                output = %self.output_name,
+                width,
+                height,
+                "Resize skipped (dimensions unchanged)"
+            );
+        }
+        Ok(())
     }
-    Ok(())
-}
-
 }

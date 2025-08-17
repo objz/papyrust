@@ -10,6 +10,7 @@ use std::sync::mpsc::Receiver;
 use wayland_client::{Connection, protocol::wl_output};
 
 use crate::ipc::MediaChange;
+use crate::lossless_scaling::ScalingAlgorithm;
 use crate::media::MediaType;
 
 mod fifo;
@@ -24,6 +25,8 @@ pub fn init(
     fifo_path: Option<&str>,
     ipc_receiver: Receiver<MediaChange>,
     mute: bool,
+    _scaling_algorithm: Option<ScalingAlgorithm>,
+    _sharpening: f32,
 ) -> Result<()> {
     tracing::info!(
         event = "wayland_init",
@@ -31,7 +34,9 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        "Initializing Wayland stack"
+        scaling = ?_scaling_algorithm,
+        sharpening = _sharpening,
+        "Initializing Wayland stack with lossless scaling"
     );
 
     let conn = Connection::connect_to_env()?;

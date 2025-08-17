@@ -3,12 +3,14 @@ use clap::{Parser, ValueEnum};
 use std::{process, sync::mpsc, thread};
 
 use tracing_log::LogTracer;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod ipc;
+mod lossless_scaling;
 mod media;
-mod wayland;
 mod utils;
+mod wayland; 
+
 mod gl_bindings {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
 }
@@ -33,11 +35,20 @@ impl std::fmt::Display for Layer {
     }
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum ScalingMode {
+    FSR,
+    Lanczos,
+    Mitchell,
+    Bicubic,
+    None,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "papyrust-daemon",
     version = "0.1.0",
-    about = "A Wayland wallpaper daemon with OpenGL ES shader support for images, videos, and shaders"
+    about = "A Wayland wallpaper daemon with OpenGL ES shader support and lossless scaling"
 )]
 struct Args {
     #[arg(short = 'F', long)]
@@ -54,8 +65,13 @@ struct Args {
 
     #[arg(long, alias = "no-audio")]
     mute: bool,
-}
 
+    #[arg(short = 's', long, default_value = "fsr")]
+    scaling: ScalingMode,
+
+    #[arg(long, default_value = "0.3")]
+    sharpening: f32,
+}
 
 fn main() -> Result<()> {
     let _ = LogTracer::init();
@@ -76,7 +92,9 @@ fn main() -> Result<()> {
         layer = args.layer.as_ref().map(|l| l.to_string()),
         fifo = args.fifo.as_deref(),
         mute = args.mute,
-        "Starting Papyrust daemon"
+        scaling = ?args.scaling,
+        sharpening = args.sharpening,
+        "Starting Papyrust daemon with lossless scaling"
     );
 
     if args.fork {
@@ -89,7 +107,10 @@ fn main() -> Result<()> {
                 libc::close(0);
                 libc::close(1);
                 libc::close(2);
-                tracing::debug!(event = "daemon_forked", "Detached from controlling terminal");
+                tracing::debug!(
+                    event = "daemon_forked",
+                    "Detached from controlling terminal"
+                );
             }
         }
     }
@@ -105,6 +126,14 @@ fn main() -> Result<()> {
 
     let init_media = media::MediaType::Shader("default".to_string());
 
+    let scaling_algorithm = match args.scaling {
+        ScalingMode::FSR => Some(lossless_scaling::ScalingAlgorithm::FSR),
+        ScalingMode::Lanczos => Some(lossless_scaling::ScalingAlgorithm::Lanczos),
+        ScalingMode::Mitchell => Some(lossless_scaling::ScalingAlgorithm::Mitchell),
+        ScalingMode::Bicubic => Some(lossless_scaling::ScalingAlgorithm::Bicubic),
+        ScalingMode::None => None,
+    };
+
     wayland::init(
         init_media,
         args.fps,
@@ -112,9 +141,10 @@ fn main() -> Result<()> {
         args.fifo.as_deref(),
         rx,
         args.mute,
+        scaling_algorithm,
+        args.sharpening,
     )?;
 
     tracing::info!(event = "daemon_exit", "Papyrust daemon exited");
     Ok(())
 }
-
