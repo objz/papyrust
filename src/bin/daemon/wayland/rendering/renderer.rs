@@ -235,7 +235,8 @@ impl MediaRenderer {
 
             let time_loc = program.get_uniform_location("time");
             if time_loc != -1 {
-                let time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
+                let raw_time = (utils::get_time_millis() - self.start_time) as f32 / 1000.0;
+                let time = raw_time % 3600.0;
                 gl::Uniform1f(time_loc, time);
             }
 
@@ -283,7 +284,13 @@ impl MediaRenderer {
         Ok(())
     }
 
-    fn update_geometry(&self, output_width: i32, output_height: i32, media_width: u32, media_height: u32) {
+    fn update_geometry(
+        &self,
+        output_width: i32,
+        output_height: i32,
+        media_width: u32,
+        media_height: u32,
+    ) {
         let output_w = output_width as f32;
         let output_h = output_height as f32;
         let media_w = media_width as f32;

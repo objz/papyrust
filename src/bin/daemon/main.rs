@@ -65,12 +65,6 @@ struct Args {
 
     #[arg(long, alias = "no-audio")]
     mute: bool,
-
-    #[arg(short = 's', long, default_value = "fsr")]
-    scaling: ScalingMode,
-
-    #[arg(long, default_value = "0.3")]
-    sharpening: f32,
 }
 
 fn main() -> Result<()> {
@@ -92,8 +86,6 @@ fn main() -> Result<()> {
         layer = args.layer.as_ref().map(|l| l.to_string()),
         fifo = args.fifo.as_deref(),
         mute = args.mute,
-        scaling = ?args.scaling,
-        sharpening = args.sharpening,
         "Starting Papyrust daemon with unified resource management"
     );
 
@@ -133,7 +125,6 @@ fn main() -> Result<()> {
         args.fifo.as_deref(),
         rx,
         args.mute,
-        args.sharpening,
     )?;
 
     tracing::info!(event = "daemon_exit", "Papyrust daemon exited");

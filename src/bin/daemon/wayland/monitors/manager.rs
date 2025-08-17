@@ -1,15 +1,15 @@
-use std::collections::HashMap;
+use crate::media::MediaType;
+use crate::wayland::audio::FifoReader;
+use crate::wayland::protocol::events::AppState;
+use crate::wayland::rendering::surface::WaylandSurface;
+use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
+use crate::wayland::types::{OutputInfo, RenderContext};
 use anyhow::Result;
 use khronos_egl as egl;
-use wayland_client::{Connection, QueueHandle};
+use std::collections::HashMap;
 use wayland_client::protocol::wl_compositor;
+use wayland_client::{Connection, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
-use crate::media::MediaType;
-use crate::wayland::rendering::surface::WaylandSurface;
-use crate::wayland::types::{OutputInfo, RenderContext};
-use crate::wayland::protocol::events::AppState;
-use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
-use crate::wayland::audio::FifoReader;
 
 pub struct MonitorManager {
     surfaces: HashMap<String, WaylandSurface>,
@@ -56,7 +56,12 @@ impl MonitorManager {
         self.surfaces.values_mut()
     }
 
-    pub fn update_media(&mut self, target_monitors: Option<&[String]>, media_type: MediaType, fps: u16) -> Result<()> {
+    pub fn update_media(
+        &mut self,
+        target_monitors: Option<&[String]>,
+        media_type: MediaType,
+        fps: u16,
+    ) -> Result<()> {
         match target_monitors {
             None => {
                 tracing::info!(
@@ -83,10 +88,10 @@ impl MonitorManager {
                     available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
                     "Updating media on specific monitors"
                 );
-                
+
                 let mut found_monitors = Vec::new();
                 let mut missing_monitors = Vec::new();
-                
+
                 for target_name in target_names {
                     if let Some(surface) = self.surfaces.get_mut(target_name) {
                         tracing::debug!(
@@ -100,7 +105,7 @@ impl MonitorManager {
                         missing_monitors.push(target_name);
                     }
                 }
-                
+
                 if !missing_monitors.is_empty() {
                     tracing::warn!(
                         event = "monitors_not_found",
@@ -110,7 +115,7 @@ impl MonitorManager {
                         "Some target monitors were not found"
                     );
                 }
-                
+
                 if found_monitors.is_empty() {
                     tracing::error!(
                         event = "no_monitors_updated",
@@ -126,21 +131,33 @@ impl MonitorManager {
 
     pub fn set_swap_intervals(&self, has_video: bool, fps: u16) -> Result<()> {
         for surface in self.surfaces.values() {
-            if has_video {
-                self.egl_instance.swap_interval(surface.egl_resources.display, 1)?;
-            } else {
-                let interval = if fps == 0 { 1 } else { 0 };
-                self.egl_instance.swap_interval(surface.egl_resources.display, interval)?;
-            }
+            let interval = match (has_video, fps) {
+                (true, _) => 1,                         // Video content always uses vsync
+                (false, 0) => 0,                        // Unlimited FPS for shaders when fps=0
+                (false, fps_val) if fps_val >= 60 => 1, // Use vsync for high FPS
+                (false, _) => 0,                        // Lower FPS can run unlocked
+            };
+
+            self.egl_instance
+                .swap_interval(surface.egl_resources.display, interval)?;
+
+            tracing::debug!(
+                event = "swap_interval_set",
+                monitor = %surface.output_name,
+                interval,
+                has_video,
+                fps,
+                "Set swap interval for optimal performance"
+            );
         }
         Ok(())
     }
 
     pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>) -> Result<bool> {
         let mut any_updated = false;
-        
+
         let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
-        
+
         for surface_name in surface_names {
             if let Some(surface) = self.surfaces.get_mut(&surface_name) {
                 self.egl_instance.make_current(
@@ -161,9 +178,10 @@ impl MonitorManager {
                 };
 
                 surface.renderer.draw(&mut surface_context)?;
-                
-                self.egl_instance.swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
-                
+
+                self.egl_instance
+                    .swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
+
                 tracing::trace!(
                     event = "surface_rendered",
                     monitor = %surface_name,
@@ -173,7 +191,7 @@ impl MonitorManager {
                 );
             }
         }
-        
+
         Ok(any_updated)
     }
 
