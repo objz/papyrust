@@ -1924,183 +1924,6 @@ pub struct WaylandConfig {
 }
 </file>
 
-<file path="src/bin/daemon/media/image.rs">
-use anyhow::{Result, anyhow};
-use image as img_crate;
-use crate::gl_utils::GlTexture;
-use crate::media::{MediaHandler, BaseMediaHandler};
-use std::sync::{Arc, Mutex};
-use std::thread;
-
-pub struct ImageHandler {
-    base: BaseMediaHandler,
-    loading_state: Arc<Mutex<LoadingState>>,
-    is_ready: bool,
-}
-
-#[derive(Debug)]
-enum LoadingState {
-    Loading,
-    DataReady {
-        width: u32,
-        height: u32,
-        data: Vec<u8>,
-    },
-    Ready,
-    Error(String),
-}
-
-impl ImageHandler {
-    pub fn new(path: &str, shader_path: Option<&str>) -> Result<Self> {
-        tracing::info!(
-            event = "image_create",
-            path = %path,
-            shader = shader_path.unwrap_or("default"),
-            "Creating image handler"
-        );
-
-        let base = BaseMediaHandler::new_with_shader(shader_path)?;
-        let loading_state = Arc::new(Mutex::new(LoadingState::Loading));
-        
-        // Start async loading
-        let path_clone = path.to_string();
-        let loading_state_clone = loading_state.clone();
-        
-        thread::spawn(move || {
-            match Self::load_image_data(&path_clone) {
-                Ok((width, height, data)) => {
-                    tracing::debug!(
-                        event = "image_data_loaded",
-                        width,
-                        height,
-                        path = %path_clone,
-                        "Image data loaded successfully"
-                    );
-                    if let Ok(mut state) = loading_state_clone.lock() {
-                        *state = LoadingState::DataReady { width, height, data };
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        event = "image_load_error",
-                        error = %e,
-                        path = %path_clone,
-                        "Failed to load image"
-                    );
-                    if let Ok(mut state) = loading_state_clone.lock() {
-                        *state = LoadingState::Error(e.to_string());
-                    }
-                }
-            }
-        });
-
-        Ok(Self { 
-            base,
-            loading_state,
-            is_ready: false,
-        })
-    }
-
-    fn load_image_data(path: &str) -> Result<(u32, u32, Vec<u8>)> {
-        tracing::info!(event = "texture_load", path = %path, "Loading image data");
-
-        let img = img_crate::open(path)
-            .map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
-        let rgba = img.to_rgba8();
-        let (width, height) = (img.width(), img.height());
-
-        tracing::debug!(event = "image_info", width, height, "Image decoded");
-
-        Ok((width, height, rgba.into_raw()))
-    }
-
-    fn check_loading_state(&mut self) -> bool {
-        if self.is_ready {
-            return false;
-        }
-
-        if let Ok(mut state) = self.loading_state.lock() {
-            match std::mem::replace(&mut *state, LoadingState::Loading) {
-                LoadingState::Loading => {
-                    *state = LoadingState::Loading;
-                    false
-                }
-                LoadingState::DataReady { width, height, data } => {
-                    // Create texture on the main thread (with OpenGL context)
-                    match GlTexture::from_rgba_data(width, height, &data, true) {
-                        Ok(texture) => {
-                            self.base.dimensions = (texture.width, texture.height);
-                            self.base.texture = Some(texture);
-                            self.base.has_new_frame = true;
-                            self.is_ready = true;
-                            *state = LoadingState::Ready;
-                            
-                            tracing::debug!(
-                                event = "texture_created",
-                                width,
-                                height,
-                                "Texture created successfully, image is ready"
-                            );
-                            true
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                event = "texture_create_error",
-                                error = %e,
-                                "Failed to create texture from loaded data"
-                            );
-                            *state = LoadingState::Error(e.to_string());
-                            false
-                        }
-                    }
-                }
-                LoadingState::Ready => {
-                    *state = LoadingState::Ready;
-                    false
-                }
-                LoadingState::Error(e) => {
-                    *state = LoadingState::Error(e);
-                    false
-                }
-            }
-        } else {
-            false
-        }
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.is_ready
-    }
-}
-
-impl MediaHandler for ImageHandler {
-    fn get_texture(&self) -> Option<&GlTexture> {
-        self.base.texture.as_ref()
-    }
-
-    fn get_dimensions(&self) -> (u32, u32) {
-        self.base.dimensions
-    }
-
-    fn update(&mut self) -> Result<bool> {
-        let loaded = self.check_loading_state();
-        if loaded && self.base.has_new_frame {
-            self.base.has_new_frame = false;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    fn has_new_frame(&self) -> bool {
-        self.base.has_new_frame
-    }
-
-    fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
-        &self.base.shader_program
-    }
-}
-</file>
-
 <file path="src/bin/daemon/media/video.rs">
 use anyhow::{Result, anyhow};
 use ffmpeg_next as ffmpeg;
@@ -2821,63 +2644,15 @@ impl MediaRenderer {
             "Updating renderer media"
         );
 
-        match &new_media_type {
-            MediaType::Image { .. } => {
-                // For images, create the new handler but don't replace until ready
-                let new_media = Self::create_media_object(new_media_type, fps)?;
-                
-                if let MediaObject::Image(ref image_handler) = new_media {
-                    if image_handler.is_ready() {
-                        // Image is immediately ready, replace now
-                        self.media_object = Some(new_media);
-                        self.needs_resource_refresh = true;
-                    } else {
-                        // Image is loading, store as pending and keep current media
-                        self.pending_media_type = Some((new_media_type, fps));
-                        // Don't set needs_resource_refresh yet
-                    }
-                } else {
-                    self.media_object = Some(new_media);
-                    self.needs_resource_refresh = true;
-                }
-            }
-            _ => {
-                // For non-image media, replace immediately
-                self.media_object = Some(Self::create_media_object(new_media_type, fps)?);
-                self.needs_resource_refresh = true;
-            }
-        }
+        self.pending_media_type = Some((new_media_type, fps));
+        self.needs_resource_refresh = true;
 
         Ok(())
     }
 
     fn ensure_resources(&mut self) -> Result<()> {
-        // Check if we have a pending image that's now ready
-        if let Some((media_type, fps)) = &self.pending_media_type {
-            if let MediaType::Image { .. } = media_type {
-                let new_media = Self::create_media_object(media_type.clone(), *fps)?;
-                if let MediaObject::Image(ref image_handler) = new_media {
-                    if image_handler.is_ready() {
-                        // Image is now ready, replace the current media
-                        self.media_object = Some(new_media);
-                        self.pending_media_type = None;
-                        self.needs_resource_refresh = true;
-                        
-                        tracing::info!(
-                            event = "pending_image_ready",
-                            "Pending image is ready, switching background"
-                        );
-                    }
-                } else {
-                    // Shouldn't happen, but handle gracefully
-                    self.pending_media_type = None;
-                }
-            } else {
-                // Non-image pending media, process normally
-                self.media_object = Some(Self::create_media_object(media_type.clone(), *fps)?);
-                self.pending_media_type = None;
-                self.needs_resource_refresh = true;
-            }
+        if let Some((media_type, fps)) = self.pending_media_type.take() {
+            self.media_object = Some(Self::create_media_object(media_type, fps)?);
         }
 
         if self.needs_resource_refresh {
@@ -2901,6 +2676,7 @@ impl MediaRenderer {
         }
         Ok(())
     }
+
     fn setup_geometry() -> Result<(u32, u32, u32)> {
         let vertices: [f32; 16] = [
             -1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
@@ -3118,6 +2894,170 @@ flamegraph.svg
 perf.data
 perf.data.old
 stacks.folded
+</file>
+
+<file path="src/bin/daemon/media/image.rs">
+use anyhow::{Result, anyhow};
+use image as img_crate;
+use crate::gl_utils::GlTexture;
+use crate::media::{MediaHandler, BaseMediaHandler};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+pub struct ImageHandler {
+    base: BaseMediaHandler,
+    loading_state: Arc<Mutex<LoadingState>>,
+}
+
+#[derive(Debug)]
+enum LoadingState {
+    Loading,
+    DataReady {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    TextureCreated,
+    Error(String),
+}
+
+impl ImageHandler {
+    pub fn new(path: &str, shader_path: Option<&str>) -> Result<Self> {
+        tracing::info!(
+            event = "image_create",
+            path = %path,
+            shader = shader_path.unwrap_or("default"),
+            "Creating image handler"
+        );
+
+        let base = BaseMediaHandler::new_with_shader(shader_path)?;
+        let loading_state = Arc::new(Mutex::new(LoadingState::Loading));
+        
+        let path_clone = path.to_string();
+        let loading_state_clone = loading_state.clone();
+        
+        thread::spawn(move || {
+            match Self::load_image_data(&path_clone) {
+                Ok((width, height, data)) => {
+                    tracing::debug!(
+                        event = "image_data_loaded",
+                        width,
+                        height,
+                        path = %path_clone,
+                        "Image data loaded successfully"
+                    );
+                    if let Ok(mut state) = loading_state_clone.lock() {
+                        *state = LoadingState::DataReady { width, height, data };
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        event = "image_load_error",
+                        error = %e,
+                        path = %path_clone,
+                        "Failed to load image"
+                    );
+                    if let Ok(mut state) = loading_state_clone.lock() {
+                        *state = LoadingState::Error(e.to_string());
+                    }
+                }
+            }
+        });
+
+        Ok(Self { 
+            base,
+            loading_state,
+        })
+    }
+
+    fn load_image_data(path: &str) -> Result<(u32, u32, Vec<u8>)> {
+        tracing::info!(event = "texture_load", path = %path, "Loading image data");
+
+        let img = img_crate::open(path)
+            .map_err(|e| anyhow!("Failed to load image {}: {}", path, e))?;
+        let rgba = img.to_rgba8();
+        let (width, height) = (img.width(), img.height());
+
+        tracing::debug!(event = "image_info", width, height, "Image decoded");
+
+        Ok((width, height, rgba.into_raw()))
+    }
+
+    fn check_loading_state(&mut self) -> bool {
+        if let Ok(mut state) = self.loading_state.lock() {
+            match std::mem::replace(&mut *state, LoadingState::Loading) {
+                LoadingState::Loading => {
+                    *state = LoadingState::Loading;
+                    false
+                }
+                LoadingState::DataReady { width, height, data } => {
+                    match GlTexture::from_rgba_data(width, height, &data, true) {
+                        Ok(texture) => {
+                            self.base.dimensions = (texture.width, texture.height);
+                            self.base.texture = Some(texture);
+                            self.base.has_new_frame = true;
+                            *state = LoadingState::TextureCreated;
+                            
+                            tracing::debug!(
+                                event = "texture_created",
+                                width,
+                                height,
+                                "Texture created successfully"
+                            );
+                            true
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                event = "texture_create_error",
+                                error = %e,
+                                "Failed to create texture from loaded data"
+                            );
+                            *state = LoadingState::Error(e.to_string());
+                            false
+                        }
+                    }
+                }
+                LoadingState::TextureCreated => {
+                    *state = LoadingState::TextureCreated;
+                    false
+                }
+                LoadingState::Error(e) => {
+                    *state = LoadingState::Error(e);
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+}
+
+impl MediaHandler for ImageHandler {
+    fn get_texture(&self) -> Option<&GlTexture> {
+        self.base.texture.as_ref()
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        self.base.dimensions
+    }
+
+    fn update(&mut self) -> Result<bool> {
+        let loaded = self.check_loading_state();
+        if loaded && self.base.has_new_frame {
+            self.base.has_new_frame = false;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn has_new_frame(&self) -> bool {
+        self.base.has_new_frame
+    }
+
+    fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
+        &self.base.shader_program
+    }
+}
 </file>
 
 <file path="src/ui/mod.rs">

@@ -30,13 +30,14 @@ impl MediaObject {
 }
 
 pub struct MediaRenderer {
-    media_object: Option<MediaObject>,
+    current_media: Option<MediaObject>,
+    loading_media: Option<MediaObject>,
     pending_media_type: Option<(MediaType, u16)>,
     vbo: u32,
     ebo: u32,
     vao: u32,
     start_time: u64,
-    needs_resource_refresh: bool,
+    loading_in_background: bool,
 }
 
 impl MediaRenderer {
@@ -52,15 +53,20 @@ impl MediaRenderer {
         Self::initialize_gl()?;
         let (vbo, ebo, vao) = Self::setup_geometry()?;
 
-        Ok(Self {
-            media_object: None,
+        let mut renderer = Self {
+            current_media: None,
+            loading_media: None,
             pending_media_type: Some((media_type, fps)),
             vbo,
             ebo,
             vao,
             start_time,
-            needs_resource_refresh: false,
-        })
+            loading_in_background: false,
+        };
+
+        renderer.ensure_resources()?;
+
+        Ok(renderer)
     }
 
     fn initialize_gl() -> Result<()> {
@@ -110,10 +116,13 @@ impl MediaRenderer {
     }
 
     pub fn has_new_frame(&self) -> bool {
-        self.media_object
-            .as_ref()
-            .map(|obj| obj.as_handler().has_new_frame())
-            .unwrap_or(false)
+        if let Some(ref media) = self.current_media {
+            media.as_handler().has_new_frame()
+        } else if let Some(ref loading) = self.loading_media {
+            loading.as_handler().has_new_frame()
+        } else {
+            false
+        }
     }
 
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
@@ -121,39 +130,93 @@ impl MediaRenderer {
             event = "renderer_media_update",
             ?new_media_type,
             fps,
+            loading_in_background = self.loading_in_background,
             "Updating renderer media"
         );
 
         self.pending_media_type = Some((new_media_type, fps));
-        self.needs_resource_refresh = true;
+        self.loading_in_background = true;
 
         Ok(())
     }
 
     fn ensure_resources(&mut self) -> Result<()> {
         if let Some((media_type, fps)) = self.pending_media_type.take() {
-            self.media_object = Some(Self::create_media_object(media_type, fps)?);
-        }
+            match Self::create_media_object(media_type.clone(), fps) {
+                Ok(new_media) => {
+                    let is_ready = match &new_media {
+                        MediaObject::Shader(_) => true, 
+                        MediaObject::Image(img_handler) => {
+                            img_handler.get_texture().is_some()
+                        }
+                        MediaObject::Video(vid_handler) => {
+                            let (w, h) = vid_handler.get_dimensions();
+                            w > 0 && h > 0
+                        }
+                    };
 
-        if self.needs_resource_refresh {
-            unsafe {
-                if self.vao != 0 {
-                    gl::DeleteVertexArrays(1, &self.vao);
+                    if is_ready || self.current_media.is_none() {
+                        self.current_media = Some(new_media);
+                        self.loading_media = None;
+                        self.loading_in_background = false;
+
+                        tracing::info!(
+                            event = "media_transition_immediate",
+                            ?media_type,
+                            "New media ready immediately, transitioning"
+                        );
+                    } else {
+                        self.loading_media = Some(new_media);
+
+                        tracing::info!(
+                            event = "media_loading_background",
+                            ?media_type,
+                            "New media loading in background"
+                        );
+                    }
                 }
-                if self.vbo != 0 {
-                    gl::DeleteBuffers(1, &self.vbo);
-                }
-                if self.ebo != 0 {
-                    gl::DeleteBuffers(1, &self.ebo);
+                Err(e) => {
+                    tracing::error!(
+                        event = "media_load_error",
+                        error = %e,
+                        ?media_type,
+                        "Failed to load new media"
+                    );
+                    self.loading_in_background = false;
+                    return Err(e);
                 }
             }
-
-            let (vbo, ebo, vao) = Self::setup_geometry()?;
-            self.vbo = vbo;
-            self.ebo = ebo;
-            self.vao = vao;
-            self.needs_resource_refresh = false;
         }
+
+        if self.loading_in_background && self.loading_media.is_some() {
+            let should_transition = if let Some(ref loading_media) = self.loading_media {
+                match loading_media {
+                    MediaObject::Image(img_handler) => {
+                        img_handler.get_texture().is_some()
+                    }
+                    MediaObject::Video(vid_handler) => {
+                        let (w, h) = vid_handler.get_dimensions();
+                        w > 0 && h > 0 && vid_handler.get_texture().is_some()
+                    }
+                    MediaObject::Shader(_) => true, 
+                }
+            } else {
+                false
+            };
+
+            if should_transition {
+                if let Some(new_media) = self.loading_media.take() {
+                    self.current_media = Some(new_media);
+                    self.loading_in_background = false;
+
+                    tracing::info!(
+                        event = "media_transition_complete",
+                        "Background loaded media is now active"
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -218,11 +281,22 @@ impl MediaRenderer {
     pub fn draw(&mut self, context: &mut RenderContext) -> Result<()> {
         self.ensure_resources()?;
 
-        let Some(ref mut media_object) = self.media_object else {
+        if let Some(ref mut media) = self.current_media {
+            let _ = media.as_handler_mut().update()?;
+        }
+
+        if let Some(ref mut loading_media) = self.loading_media {
+            let _ = loading_media.as_handler_mut().update()?;
+        }
+
+        let media_to_render = self.current_media.as_ref().or(self.loading_media.as_ref());
+
+        let Some(media_object) = media_to_render else {
+            unsafe {
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+            }
             return Ok(());
         };
-
-        let _ = media_object.as_handler_mut().update()?;
 
         let handler = media_object.as_handler();
         let program = handler.get_shader_program();
