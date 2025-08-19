@@ -27,6 +27,14 @@ impl MediaObject {
             MediaObject::Video(h) => h,
         }
     }
+
+    // Add method to get video handler specifically
+    fn as_video_handler_mut(&mut self) -> Option<&mut VideoHandler> {
+        match self {
+            MediaObject::Video(h) => Some(h),
+            _ => None,
+        }
+    }
 }
 
 pub struct MediaRenderer {
@@ -123,6 +131,16 @@ impl MediaRenderer {
         } else {
             false
         }
+    }
+
+    // Add method to check for video restarts
+    pub fn check_video_restart(&mut self) -> bool {
+        if let Some(ref mut media) = self.current_media {
+            if let Some(video_handler) = media.as_video_handler_mut() {
+                return video_handler.take_restart_flag();
+            }
+        }
+        false
     }
 
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {

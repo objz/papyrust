@@ -54,7 +54,9 @@ src/
       wayland/
         audio/
           fifo.rs
+          manager.rs
           mod.rs
+          player.rs
         monitors/
           manager.rs
           mod.rs
@@ -220,10 +222,187 @@ impl FifoReader {
 }
 </file>
 
-<file path="src/bin/daemon/wayland/audio/mod.rs">
-pub mod fifo;
+<file path="src/bin/daemon/wayland/audio/manager.rs">
+use super::player::AudioPlayer;
+use crate::media::MediaType;
+use anyhow::Result;
+use tracing::{debug, info};
 
-pub use fifo::FifoReader;
+pub struct AudioManager {
+    player: AudioPlayer,
+    muted: bool,
+    global_mute: bool,
+}
+
+impl AudioManager {
+    pub fn new(global_mute: bool) -> Self {
+        info!(
+            event = "audio_manager_init",
+            global_mute, "Initializing audio manager"
+        );
+
+        Self {
+            player: AudioPlayer::new(),
+            muted: false,
+            global_mute,
+        }
+    }
+
+    pub fn handle_change(&mut self, media_type: &MediaType, media_mute: bool) -> Result<()> {
+        match media_type {
+            MediaType::Video { path, .. } => self.set_audio(path, media_mute),
+            MediaType::Image { .. } | MediaType::Shader(_) => self.stop_audio(),
+        }
+    }
+
+    pub fn set_audio(&mut self, path: &str, media_mute: bool) -> Result<()> {
+        let effective_mute = self.global_mute || media_mute;
+
+        info!(
+            event = "audio_set_video",
+            path = %path,
+            global_mute = self.global_mute,
+            media_mute = media_mute,
+            effective_mute = effective_mute,
+            "Setting video audio"
+        );
+
+        if effective_mute {
+            if self.player.is_playing() {
+                debug!(event = "audio_stop_muted", "Stopping audio due to mute");
+                self.player.stop()?;
+            }
+            self.muted = true;
+            return Ok(());
+        }
+
+        if self.player.is_playing_path(path) {
+            debug!(
+                event = "audio_already_playing",
+                path = %path,
+                "Audio already playing for this path"
+            );
+            return Ok(());
+        }
+
+        self.player.play(path)?;
+        self.muted = false;
+        Ok(())
+    }
+
+    pub fn stop_audio(&mut self) -> Result<()> {
+        info!(event = "audio_stop", "Stopping all audio playback");
+        self.player.stop()?;
+        self.muted = false;
+        Ok(())
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.player.is_playing() && !self.muted
+    }
+
+    pub fn cleanup(&mut self) -> Result<()> {
+        info!(event = "audio_cleanup", "Cleaning up audio manager");
+        self.stop_audio()
+    }
+}
+
+impl Drop for AudioManager {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+</file>
+
+<file path="src/bin/daemon/wayland/audio/player.rs">
+use anyhow::{Result, anyhow};
+use std::process::{Child, Command};
+use tracing::{debug, info, warn};
+
+pub struct AudioPlayer {
+    child: Option<Child>,
+    current_path: Option<String>,
+}
+
+impl AudioPlayer {
+    pub fn new() -> Self {
+        Self {
+            child: None,
+            current_path: None,
+        }
+    }
+
+    pub fn play(&mut self, path: &str) -> Result<()> {
+        self.stop()?;
+
+        info!(
+            event = "audio_player_starting",
+            path = %path,
+            "Starting ffplay for audio playback"
+        );
+
+        match Command::new("ffplay")
+            .args(&[
+                "-nodisp",
+                "-autoexit",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-loop",
+                "0",
+                path,
+            ])
+            .spawn()
+        {
+            Ok(child) => {
+                self.child = Some(child);
+                self.current_path = Some(path.to_string());
+                info!(
+                    event = "audio_player_started",
+                    path = %path,
+                    "Successfully started ffplay for audio"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                warn!(
+                    event = "audio_player_fail",
+                    error = %e,
+                    path = %path,
+                    "Failed to start ffplay"
+                );
+                Err(anyhow!("Failed to start audio player: {}", e))
+            }
+        }
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        if let Some(mut child) = self.child.take() {
+            debug!(event = "audio_player_stopping", "Stopping ffplay process");
+
+            let _ = child.kill();
+            let _ = child.wait();
+
+            debug!(event = "audio_player_stopped", "Stopped ffplay process");
+        }
+        self.current_path = None;
+        Ok(())
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.child.is_some()
+    }
+
+    pub fn is_playing_path(&self, path: &str) -> bool {
+        self.current_path.as_deref() == Some(path)
+    }
+}
+
+impl Drop for AudioPlayer {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
 </file>
 
 <file path="src/bin/daemon/wayland/rendering/mod.rs">
@@ -871,6 +1050,15 @@ fn main() {
         .write_bindings(gl_generator::GlobalGenerator, &mut file)
         .unwrap();
 }
+</file>
+
+<file path="src/bin/daemon/wayland/audio/mod.rs">
+pub mod fifo;
+pub mod manager;
+pub mod player;
+
+pub use fifo::FifoReader;
+pub use manager::AudioManager;
 </file>
 
 <file path="src/bin/daemon/wayland/protocol/events.rs">
@@ -3617,12 +3805,81 @@ fn handle_client(stream: UnixStream, tx: Sender<MediaChange>) -> Result<()> {
 }
 </file>
 
+<file path="src/ui/view.rs">
+use iced::{
+    alignment::{Horizontal, Vertical},
+    widget::{image::Handle, Column, Container, Stack},
+    Element, Length, Padding,
+};
+use iced_aw::Wrap;
+
+use crate::{ui::loader::project::Project, Message, Papyrust};
+
+use super::{components::lib_popup, components::panel, pages::discover, pages::library, state};
+
+pub fn build(app: &Papyrust) -> Element<Message> {
+    let content = match app.current_page {
+        state::Page::Discover => discover::build(app),
+        state::Page::Library => library::build(app),
+    };
+
+    let main = Column::new()
+        .push(content)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    let panel = Container::new(panel::build(app))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Bottom);
+
+    let main_content = Column::new().push(main).push(
+        Container::new(panel)
+            .width(Length::Fill)
+            .height(Length::Fixed(80.0)),
+    );
+
+    if let Some(ref project) = app.popup_state {
+        Stack::new()
+            .push(main_content)
+            .push(lib_popup::build(app, project))
+            .into()
+    } else {
+        main_content.into()
+    }
+}
+
+pub fn create_grid<'a>(
+    app: &'a Papyrust,
+    projects: &'a [Project],
+    preview: &'a [Option<Handle>],
+) -> Element<'a, Message> {
+    let mut items = Vec::new();
+
+    for (idx, project) in projects.iter().enumerate() {
+        let handle = preview.get(idx).and_then(Clone::clone);
+        items.push(library::render_item(app, project, handle));
+    }
+
+    Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
+        .width(Length::Fill)
+        .padding(8)
+        .into()
+}
+</file>
+
 <file path="src/bin/daemon/wayland/mod.rs">
 use crate::ipc::MediaChange;
 use crate::media::MediaType;
 use crate::utils;
 use anyhow::{Result, anyhow};
-use std::process::Child;
 use std::sync::mpsc::Receiver;
 use wayland_client::Connection;
 
@@ -3633,7 +3890,7 @@ pub mod rendering;
 pub mod traits;
 pub mod types;
 
-use audio::fifo::FifoReader;
+use audio::{AudioManager, FifoReader};
 use monitors::MonitorManager;
 use traits::WaylandSurface as WaylandSurfaceTrait;
 use types::WaylandConfig;
@@ -3736,7 +3993,7 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        "Initializing Wayland stack"
+        "Initializing Wayland stack with audio manager"
     );
 
     let config = WaylandConfig {
@@ -3748,9 +4005,14 @@ pub fn init(
     let mut wayland_manager = WaylandManager::new(config);
     wayland_manager.initialize(&conn)?;
 
+    let mut audio_manager = AudioManager::new(mute);
+
     let mut fifo_reader = fifo_path.map(FifoReader::new).transpose()?;
+
     let mut has_video = matches!(media_type, MediaType::Video { .. });
     let mut current_media_type = media_type.clone();
+
+    audio_manager.handle_change(&current_media_type, false)?;
 
     wayland_manager
         .monitor_manager
@@ -3759,14 +4021,11 @@ pub fn init(
     tracing::info!(
         event = "render_loop_start",
         monitors = wayland_manager.monitor_manager.len(),
-        "Starting render loop"
+        "Starting render loop with audio manager"
     );
 
-    let mut last_audio_path: Option<String> = None;
-    let mut last_audio_child: Option<Child> = None;
     let mut frame_count = 0u64;
     let mut last_fps_check = utils::get_time_millis();
-
     let base_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 };
 
     loop {
@@ -3788,55 +4047,7 @@ pub fn init(
 
             current_media_type = media_change.media_type.clone();
 
-            if let MediaType::Video { path, .. } = &media_change.media_type {
-                let effective_mute = mute || media_change.mute;
-
-                if effective_mute || last_audio_path.as_deref() != Some(path.as_str()) {
-                    if let Some(mut child) = last_audio_child.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        tracing::debug!(event = "audio_player_stopped", "Stopped ffplay");
-                    }
-                }
-
-                if !effective_mute && last_audio_path.as_deref() != Some(path.as_str()) {
-                    let audio_path = path.clone();
-                    match std::process::Command::new("ffplay")
-                        .args(&[
-                            "-nodisp",
-                            "-autoexit",
-                            "-hide_banner",
-                            "-loglevel",
-                            "error",
-                            "-loop",
-                            "0",
-                            &audio_path,
-                        ])
-                        .spawn()
-                    {
-                        Ok(child) => {
-                            last_audio_child = Some(child);
-                            last_audio_path = Some(path.clone());
-                            tracing::info!(event = "audio_player_started", path = %audio_path, "Started ffplay for audio");
-                        }
-                        Err(e) => {
-                            tracing::warn!(event = "audio_player_fail", error = %e, path = %audio_path, "Failed to start ffplay");
-                        }
-                    }
-                } else if effective_mute {
-                    last_audio_path = None;
-                }
-            } else {
-                if let Some(mut child) = last_audio_child.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    tracing::debug!(
-                        event = "audio_player_stopped",
-                        "Stopped ffplay due to non-video media"
-                    );
-                }
-                last_audio_path = None;
-            }
+            audio_manager.handle_change(&media_change.media_type, media_change.mute)?;
 
             let target_monitors = media_change.monitors.as_deref();
             wayland_manager.monitor_manager.update_media(
@@ -3890,82 +4101,13 @@ pub fn init(
                     expected_fps = fps,
                     actual_fps,
                     media_type = ?current_media_type,
+                    audio_playing = audio_manager.is_playing(),
                     "Performance below expected threshold"
                 );
             }
             last_fps_check = now;
         }
     }
-}
-</file>
-
-<file path="src/ui/view.rs">
-use iced::{
-    alignment::{Horizontal, Vertical},
-    widget::{image::Handle, Column, Container, Stack},
-    Element, Length, Padding,
-};
-use iced_aw::Wrap;
-
-use crate::{ui::loader::project::Project, Message, Papyrust};
-
-use super::{components::lib_popup, components::panel, pages::discover, pages::library, state};
-
-pub fn build(app: &Papyrust) -> Element<Message> {
-    let content = match app.current_page {
-        state::Page::Discover => discover::build(app),
-        state::Page::Library => library::build(app),
-    };
-
-    let main = Column::new()
-        .push(content)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    let panel = Container::new(panel::build(app))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(Padding {
-            top: 0.0,
-            right: 20.0,
-            bottom: 0.0,
-            left: 0.0,
-        })
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Bottom);
-
-    let main_content = Column::new().push(main).push(
-        Container::new(panel)
-            .width(Length::Fill)
-            .height(Length::Fixed(80.0)),
-    );
-
-    if let Some(ref project) = app.popup_state {
-        Stack::new()
-            .push(main_content)
-            .push(lib_popup::build(app, project))
-            .into()
-    } else {
-        main_content.into()
-    }
-}
-
-pub fn create_grid<'a>(
-    app: &'a Papyrust,
-    projects: &'a [Project],
-    preview: &'a [Option<Handle>],
-) -> Element<'a, Message> {
-    let mut items = Vec::new();
-
-    for (idx, project) in projects.iter().enumerate() {
-        let handle = preview.get(idx).and_then(Clone::clone);
-        items.push(library::render_item(app, project, handle));
-    }
-
-    Container::new(Wrap::with_elements(items).spacing(8.0).line_spacing(8.0))
-        .width(Length::Fill)
-        .padding(8)
-        .into()
 }
 </file>
 

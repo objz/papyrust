@@ -1,5 +1,5 @@
 use crate::media::MediaType;
-use crate::wayland::audio::FifoReader;
+use crate::wayland::audio::{AudioManager, FifoReader};
 use crate::wayland::protocol::events::AppState;
 use crate::wayland::rendering::surface::WaylandSurface;
 use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
@@ -153,8 +153,9 @@ impl MonitorManager {
         Ok(())
     }
 
-    pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>) -> Result<bool> {
+    pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>, audio_manager: &mut AudioManager) -> Result<bool> {
         let mut any_updated = false;
+        let mut video_restarted = false;
 
         let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
 
@@ -169,6 +170,11 @@ impl MonitorManager {
 
                 if surface.renderer.has_new_frame() {
                     any_updated = true;
+                }
+
+                // Check for video restart
+                if surface.renderer.check_video_restart() {
+                    video_restarted = true;
                 }
 
                 let mut surface_context = RenderContext {
@@ -190,6 +196,10 @@ impl MonitorManager {
                     "Successfully rendered frame"
                 );
             }
+        }
+
+        if video_restarted {
+            audio_manager.handle_video_restart()?;
         }
 
         Ok(any_updated)

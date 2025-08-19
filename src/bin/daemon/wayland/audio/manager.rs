@@ -7,6 +7,7 @@ pub struct AudioManager {
     player: AudioPlayer,
     muted: bool,
     global_mute: bool,
+    current_video_path: Option<String>,
 }
 
 impl AudioManager {
@@ -20,14 +21,40 @@ impl AudioManager {
             player: AudioPlayer::new(),
             muted: false,
             global_mute,
+            current_video_path: None,
         }
     }
 
     pub fn handle_change(&mut self, media_type: &MediaType, media_mute: bool) -> Result<()> {
         match media_type {
-            MediaType::Video { path, .. } => self.set_audio(path, media_mute),
-            MediaType::Image { .. } | MediaType::Shader(_) => self.stop_audio(),
+            MediaType::Video { path, .. } => {
+                self.current_video_path = Some(path.clone());
+                self.set_audio(path, media_mute)
+            },
+            MediaType::Image { .. } | MediaType::Shader(_) => {
+                self.current_video_path = None;
+                self.stop_audio()
+            },
         }
+    }
+
+    pub fn handle_video_restart(&mut self) -> Result<()> {
+        if let Some(ref path) = self.current_video_path.clone() {
+            let effective_mute = self.global_mute || self.muted;
+            
+            info!(
+                event = "audio_restart_on_video_loop",
+                path = %path,
+                effective_mute,
+                "Restarting audio due to video loop"
+            );
+
+            if !effective_mute {
+                self.player.stop()?;
+                self.player.play(path)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn set_audio(&mut self, path: &str, media_mute: bool) -> Result<()> {

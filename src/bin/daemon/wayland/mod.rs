@@ -181,7 +181,7 @@ pub fn init(
 
         let any_video_updated = wayland_manager
             .monitor_manager
-            .render_all(fifo_reader.as_mut())?;
+            .render_all(fifo_reader.as_mut(), &mut audio_manager)?;
 
         frame_count += 1;
 

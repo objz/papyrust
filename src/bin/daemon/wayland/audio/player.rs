@@ -31,8 +31,6 @@ impl AudioPlayer {
                 "-hide_banner",
                 "-loglevel",
                 "error",
-                "-loop",
-                "0",
                 path,
             ])
             .spawn()

@@ -24,6 +24,7 @@ pub struct VideoHandler {
     loop_count: u64,
     first_pts: Option<i64>,
     frame_count: u64,
+    video_restarted: bool, 
 }
 
 impl VideoHandler {
@@ -134,7 +135,14 @@ impl VideoHandler {
             loop_count: 0,
             first_pts: None,
             frame_count: 0,
+            video_restarted: false, 
         })
+    }
+
+    pub fn take_restart_flag(&mut self) -> bool {
+        let restarted = self.video_restarted;
+        self.video_restarted = false;
+        restarted
     }
 
     fn detect_fps(stream: &ffmpeg::format::stream::Stream, time_base: f64) -> f64 {
@@ -238,6 +246,7 @@ impl VideoHandler {
 
         if !self.decode_frame_to_buffer()? {
             self.loop_count += 1;
+            self.video_restarted = true;
             tracing::debug!(
                 event = "video_loop",
                 loop_count = self.loop_count,
