@@ -2,7 +2,6 @@ use crate::ipc::MediaChange;
 use crate::media::MediaType;
 use crate::utils;
 use anyhow::{Result, anyhow};
-use std::process::Child;
 use std::sync::mpsc::Receiver;
 use wayland_client::Connection;
 
@@ -13,7 +12,7 @@ pub mod rendering;
 pub mod traits;
 pub mod types;
 
-use audio::fifo::FifoReader;
+use audio::{AudioManager, FifoReader};
 use monitors::MonitorManager;
 use traits::WaylandSurface as WaylandSurfaceTrait;
 use types::WaylandConfig;
@@ -116,7 +115,7 @@ pub fn init(
         layer = layer_name,
         fifo = fifo_path,
         mute,
-        "Initializing Wayland stack"
+        "Initializing Wayland stack with audio manager"
     );
 
     let config = WaylandConfig {
@@ -128,9 +127,14 @@ pub fn init(
     let mut wayland_manager = WaylandManager::new(config);
     wayland_manager.initialize(&conn)?;
 
+    let mut audio_manager = AudioManager::new(mute);
+
     let mut fifo_reader = fifo_path.map(FifoReader::new).transpose()?;
+
     let mut has_video = matches!(media_type, MediaType::Video { .. });
     let mut current_media_type = media_type.clone();
+
+    audio_manager.handle_change(&current_media_type, false)?;
 
     wayland_manager
         .monitor_manager
@@ -139,14 +143,11 @@ pub fn init(
     tracing::info!(
         event = "render_loop_start",
         monitors = wayland_manager.monitor_manager.len(),
-        "Starting render loop"
+        "Starting render loop with audio manager"
     );
 
-    let mut last_audio_path: Option<String> = None;
-    let mut last_audio_child: Option<Child> = None;
     let mut frame_count = 0u64;
     let mut last_fps_check = utils::get_time_millis();
-
     let base_frame_time = if fps > 0 { 1000 / fps as u64 } else { 16 };
 
     loop {
@@ -168,55 +169,7 @@ pub fn init(
 
             current_media_type = media_change.media_type.clone();
 
-            if let MediaType::Video { path, .. } = &media_change.media_type {
-                let effective_mute = mute || media_change.mute;
-
-                if effective_mute || last_audio_path.as_deref() != Some(path.as_str()) {
-                    if let Some(mut child) = last_audio_child.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        tracing::debug!(event = "audio_player_stopped", "Stopped ffplay");
-                    }
-                }
-
-                if !effective_mute && last_audio_path.as_deref() != Some(path.as_str()) {
-                    let audio_path = path.clone();
-                    match std::process::Command::new("ffplay")
-                        .args(&[
-                            "-nodisp",
-                            "-autoexit",
-                            "-hide_banner",
-                            "-loglevel",
-                            "error",
-                            "-loop",
-                            "0",
-                            &audio_path,
-                        ])
-                        .spawn()
-                    {
-                        Ok(child) => {
-                            last_audio_child = Some(child);
-                            last_audio_path = Some(path.clone());
-                            tracing::info!(event = "audio_player_started", path = %audio_path, "Started ffplay for audio");
-                        }
-                        Err(e) => {
-                            tracing::warn!(event = "audio_player_fail", error = %e, path = %audio_path, "Failed to start ffplay");
-                        }
-                    }
-                } else if effective_mute {
-                    last_audio_path = None;
-                }
-            } else {
-                if let Some(mut child) = last_audio_child.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    tracing::debug!(
-                        event = "audio_player_stopped",
-                        "Stopped ffplay due to non-video media"
-                    );
-                }
-                last_audio_path = None;
-            }
+            audio_manager.handle_change(&media_change.media_type, media_change.mute)?;
 
             let target_monitors = media_change.monitors.as_deref();
             wayland_manager.monitor_manager.update_media(
@@ -270,6 +223,7 @@ pub fn init(
                     expected_fps = fps,
                     actual_fps,
                     media_type = ?current_media_type,
+                    audio_playing = audio_manager.is_playing(),
                     "Performance below expected threshold"
                 );
             }
