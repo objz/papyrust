@@ -1,8 +1,8 @@
+use crate::gl_utils::GlTexture;
+use crate::media::{BaseMediaHandler, MediaHandler};
 use anyhow::{Result, anyhow};
 use ffmpeg_next as ffmpeg;
 use std::path::Path;
-use crate::gl_utils::GlTexture;
-use crate::media::{MediaHandler, BaseMediaHandler};
 
 pub struct VideoHandler {
     base: BaseMediaHandler,
@@ -20,11 +20,10 @@ pub struct VideoHandler {
     next_frame_pts: Option<i64>,
     reached_eof: bool,
     video_fps: f64,
-    video_duration: f64,
     loop_count: u64,
     first_pts: Option<i64>,
     frame_count: u64,
-    video_restarted: bool, 
+    video_restarted: bool,
 }
 
 impl VideoHandler {
@@ -131,11 +130,10 @@ impl VideoHandler {
             next_frame_pts: None,
             reached_eof: false,
             video_fps,
-            video_duration,
             loop_count: 0,
             first_pts: None,
             frame_count: 0,
-            video_restarted: false, 
+            video_restarted: false,
         })
     }
 
@@ -180,7 +178,11 @@ impl VideoHandler {
             event = "fps_detection",
             rate_fps = fps_from_rate,
             avg_fps = fps_from_avg,
-            time_base_fps = if time_base > 0.0 { 1.0 / time_base } else { 0.0 },
+            time_base_fps = if time_base > 0.0 {
+                1.0 / time_base
+            } else {
+                0.0
+            },
             detected_fps,
             "FPS detection results"
         );
@@ -219,7 +221,7 @@ impl VideoHandler {
 
             if let Some(current_frame) = self.current_frame.take() {
                 self.upload_frame(&current_frame);
-                self.current_frame = Some(current_frame); 
+                self.current_frame = Some(current_frame);
                 self.base.has_new_frame = true;
                 self.frame_count += 1;
             }
@@ -254,17 +256,8 @@ impl VideoHandler {
                 "Video restarted for loop"
             );
 
-            let expected_loop_duration = if let Some(forced_fps) = self.forced_fps {
-                self.frame_count as f64 / forced_fps
-            } else if self.video_duration > 0.0 {
-                self.video_duration
-            } else {
-                self.frame_count as f64 / self.video_fps
-            };
-
             let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
-            self.playback_start_time =
-                current_time - (self.loop_count as f64 * expected_loop_duration);
+            self.playback_start_time = current_time;
 
             self.frame_count = 0;
             self.first_pts = None;

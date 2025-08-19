@@ -222,189 +222,6 @@ impl FifoReader {
 }
 </file>
 
-<file path="src/bin/daemon/wayland/audio/manager.rs">
-use super::player::AudioPlayer;
-use crate::media::MediaType;
-use anyhow::Result;
-use tracing::{debug, info};
-
-pub struct AudioManager {
-    player: AudioPlayer,
-    muted: bool,
-    global_mute: bool,
-}
-
-impl AudioManager {
-    pub fn new(global_mute: bool) -> Self {
-        info!(
-            event = "audio_manager_init",
-            global_mute, "Initializing audio manager"
-        );
-
-        Self {
-            player: AudioPlayer::new(),
-            muted: false,
-            global_mute,
-        }
-    }
-
-    pub fn handle_change(&mut self, media_type: &MediaType, media_mute: bool) -> Result<()> {
-        match media_type {
-            MediaType::Video { path, .. } => self.set_audio(path, media_mute),
-            MediaType::Image { .. } | MediaType::Shader(_) => self.stop_audio(),
-        }
-    }
-
-    pub fn set_audio(&mut self, path: &str, media_mute: bool) -> Result<()> {
-        let effective_mute = self.global_mute || media_mute;
-
-        info!(
-            event = "audio_set_video",
-            path = %path,
-            global_mute = self.global_mute,
-            media_mute = media_mute,
-            effective_mute = effective_mute,
-            "Setting video audio"
-        );
-
-        if effective_mute {
-            if self.player.is_playing() {
-                debug!(event = "audio_stop_muted", "Stopping audio due to mute");
-                self.player.stop()?;
-            }
-            self.muted = true;
-            return Ok(());
-        }
-
-        if self.player.is_playing_path(path) {
-            debug!(
-                event = "audio_already_playing",
-                path = %path,
-                "Audio already playing for this path"
-            );
-            return Ok(());
-        }
-
-        self.player.play(path)?;
-        self.muted = false;
-        Ok(())
-    }
-
-    pub fn stop_audio(&mut self) -> Result<()> {
-        info!(event = "audio_stop", "Stopping all audio playback");
-        self.player.stop()?;
-        self.muted = false;
-        Ok(())
-    }
-
-    pub fn is_playing(&self) -> bool {
-        self.player.is_playing() && !self.muted
-    }
-
-    pub fn cleanup(&mut self) -> Result<()> {
-        info!(event = "audio_cleanup", "Cleaning up audio manager");
-        self.stop_audio()
-    }
-}
-
-impl Drop for AudioManager {
-    fn drop(&mut self) {
-        let _ = self.cleanup();
-    }
-}
-</file>
-
-<file path="src/bin/daemon/wayland/audio/player.rs">
-use anyhow::{Result, anyhow};
-use std::process::{Child, Command};
-use tracing::{debug, info, warn};
-
-pub struct AudioPlayer {
-    child: Option<Child>,
-    current_path: Option<String>,
-}
-
-impl AudioPlayer {
-    pub fn new() -> Self {
-        Self {
-            child: None,
-            current_path: None,
-        }
-    }
-
-    pub fn play(&mut self, path: &str) -> Result<()> {
-        self.stop()?;
-
-        info!(
-            event = "audio_player_starting",
-            path = %path,
-            "Starting ffplay for audio playback"
-        );
-
-        match Command::new("ffplay")
-            .args(&[
-                "-nodisp",
-                "-autoexit",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-loop",
-                "0",
-                path,
-            ])
-            .spawn()
-        {
-            Ok(child) => {
-                self.child = Some(child);
-                self.current_path = Some(path.to_string());
-                info!(
-                    event = "audio_player_started",
-                    path = %path,
-                    "Successfully started ffplay for audio"
-                );
-                Ok(())
-            }
-            Err(e) => {
-                warn!(
-                    event = "audio_player_fail",
-                    error = %e,
-                    path = %path,
-                    "Failed to start ffplay"
-                );
-                Err(anyhow!("Failed to start audio player: {}", e))
-            }
-        }
-    }
-
-    pub fn stop(&mut self) -> Result<()> {
-        if let Some(mut child) = self.child.take() {
-            debug!(event = "audio_player_stopping", "Stopping ffplay process");
-
-            let _ = child.kill();
-            let _ = child.wait();
-
-            debug!(event = "audio_player_stopped", "Stopped ffplay process");
-        }
-        self.current_path = None;
-        Ok(())
-    }
-
-    pub fn is_playing(&self) -> bool {
-        self.child.is_some()
-    }
-
-    pub fn is_playing_path(&self, path: &str) -> bool {
-        self.current_path.as_deref() == Some(path)
-    }
-}
-
-impl Drop for AudioPlayer {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
-</file>
-
 <file path="src/bin/daemon/wayland/rendering/mod.rs">
 pub mod renderer;
 pub mod surface;
@@ -1052,6 +869,125 @@ fn main() {
 }
 </file>
 
+<file path="src/bin/daemon/wayland/audio/manager.rs">
+use super::player::AudioPlayer;
+use crate::media::MediaType;
+use anyhow::Result;
+use tracing::{debug, info};
+
+pub struct AudioManager {
+    player: AudioPlayer,
+    muted: bool,
+    global_mute: bool,
+    current_video_path: Option<String>,
+}
+
+impl AudioManager {
+    pub fn new(global_mute: bool) -> Self {
+        info!(
+            event = "audio_manager_init",
+            global_mute, "Initializing audio manager"
+        );
+
+        Self {
+            player: AudioPlayer::new(),
+            muted: false,
+            global_mute,
+            current_video_path: None,
+        }
+    }
+
+    pub fn handle_change(&mut self, media_type: &MediaType, media_mute: bool) -> Result<()> {
+        match media_type {
+            MediaType::Video { path, .. } => {
+                self.current_video_path = Some(path.clone());
+                self.set_audio(path, media_mute)
+            },
+            MediaType::Image { .. } | MediaType::Shader(_) => {
+                self.current_video_path = None;
+                self.stop_audio()
+            },
+        }
+    }
+
+    pub fn handle_video_restart(&mut self) -> Result<()> {
+        if let Some(ref path) = self.current_video_path.clone() {
+            let effective_mute = self.global_mute || self.muted;
+            
+            info!(
+                event = "audio_restart_on_video_loop",
+                path = %path,
+                effective_mute,
+                "Restarting audio due to video loop"
+            );
+
+            if !effective_mute {
+                self.player.stop()?;
+                self.player.play(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_audio(&mut self, path: &str, media_mute: bool) -> Result<()> {
+        let effective_mute = self.global_mute || media_mute;
+
+        info!(
+            event = "audio_set_video",
+            path = %path,
+            global_mute = self.global_mute,
+            media_mute = media_mute,
+            effective_mute = effective_mute,
+            "Setting video audio"
+        );
+
+        if effective_mute {
+            if self.player.is_playing() {
+                debug!(event = "audio_stop_muted", "Stopping audio due to mute");
+                self.player.stop()?;
+            }
+            self.muted = true;
+            return Ok(());
+        }
+
+        if self.player.is_playing_path(path) {
+            debug!(
+                event = "audio_already_playing",
+                path = %path,
+                "Audio already playing for this path"
+            );
+            return Ok(());
+        }
+
+        self.player.play(path)?;
+        self.muted = false;
+        Ok(())
+    }
+
+    pub fn stop_audio(&mut self) -> Result<()> {
+        info!(event = "audio_stop", "Stopping all audio playback");
+        self.player.stop()?;
+        self.muted = false;
+        Ok(())
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.player.is_playing() && !self.muted
+    }
+
+    pub fn cleanup(&mut self) -> Result<()> {
+        info!(event = "audio_cleanup", "Cleaning up audio manager");
+        self.stop_audio()
+    }
+}
+
+impl Drop for AudioManager {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+</file>
+
 <file path="src/bin/daemon/wayland/audio/mod.rs">
 pub mod fifo;
 pub mod manager;
@@ -1059,6 +995,95 @@ pub mod player;
 
 pub use fifo::FifoReader;
 pub use manager::AudioManager;
+</file>
+
+<file path="src/bin/daemon/wayland/audio/player.rs">
+use anyhow::{Result, anyhow};
+use std::process::{Child, Command};
+use tracing::{debug, info, warn};
+
+pub struct AudioPlayer {
+    child: Option<Child>,
+    current_path: Option<String>,
+}
+
+impl AudioPlayer {
+    pub fn new() -> Self {
+        Self {
+            child: None,
+            current_path: None,
+        }
+    }
+
+    pub fn play(&mut self, path: &str) -> Result<()> {
+        self.stop()?;
+
+        info!(
+            event = "audio_player_starting",
+            path = %path,
+            "Starting ffplay for audio playback"
+        );
+
+        match Command::new("ffplay")
+            .args(&[
+                "-nodisp",
+                "-autoexit",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                path,
+            ])
+            .spawn()
+        {
+            Ok(child) => {
+                self.child = Some(child);
+                self.current_path = Some(path.to_string());
+                info!(
+                    event = "audio_player_started",
+                    path = %path,
+                    "Successfully started ffplay for audio"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                warn!(
+                    event = "audio_player_fail",
+                    error = %e,
+                    path = %path,
+                    "Failed to start ffplay"
+                );
+                Err(anyhow!("Failed to start audio player: {}", e))
+            }
+        }
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        if let Some(mut child) = self.child.take() {
+            debug!(event = "audio_player_stopping", "Stopping ffplay process");
+
+            let _ = child.kill();
+            let _ = child.wait();
+
+            debug!(event = "audio_player_stopped", "Stopped ffplay process");
+        }
+        self.current_path = None;
+        Ok(())
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.child.is_some()
+    }
+
+    pub fn is_playing_path(&self, path: &str) -> bool {
+        self.current_path.as_deref() == Some(path)
+    }
+}
+
+impl Drop for AudioPlayer {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
 </file>
 
 <file path="src/bin/daemon/wayland/protocol/events.rs">
@@ -2112,599 +2137,6 @@ pub struct WaylandConfig {
 }
 </file>
 
-<file path="src/bin/daemon/media/video.rs">
-use anyhow::{Result, anyhow};
-use ffmpeg_next as ffmpeg;
-use std::path::Path;
-use crate::gl_utils::GlTexture;
-use crate::media::{MediaHandler, BaseMediaHandler};
-
-pub struct VideoHandler {
-    base: BaseMediaHandler,
-    decoder: ffmpeg::decoder::Video,
-    scaler: Option<ffmpeg::software::scaling::Context>,
-    input_ctx: ffmpeg::format::context::Input,
-    stream_index: usize,
-    video_path: String,
-    time_base: f64,
-    playback_start_time: f64,
-    forced_fps: Option<f64>,
-    current_frame: Option<ffmpeg::frame::Video>,
-    next_frame: Option<ffmpeg::frame::Video>,
-    current_frame_pts: Option<i64>,
-    next_frame_pts: Option<i64>,
-    reached_eof: bool,
-    video_fps: f64,
-    video_duration: f64,
-    loop_count: u64,
-    first_pts: Option<i64>,
-    frame_count: u64,
-}
-
-impl VideoHandler {
-    pub fn new(path: &str, shader_path: Option<&str>, forced_fps: Option<f64>) -> Result<Self> {
-        let fps_msg = if let Some(fps) = forced_fps {
-            format!("forced FPS: {:.1}", fps)
-        } else {
-            "original timing".to_string()
-        };
-        tracing::info!(
-            event = "video_create",
-            path = %path,
-            %fps_msg,
-            shader = shader_path.unwrap_or("default"),
-            "Creating video handler"
-        );
-
-        ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
-        let input_ctx = ffmpeg::format::input(&Path::new(path))
-            .map_err(|e| anyhow!("Failed to open video file {}: {}", path, e))?;
-
-        let stream = input_ctx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| anyhow!("No video stream found in {}", path))?;
-        let stream_index = stream.index();
-
-        let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-            .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
-        let decoder = context_decoder
-            .decoder()
-            .video()
-            .map_err(|e| anyhow!("Failed to create video decoder: {}", e))?;
-
-        let width = decoder.width();
-        let height = decoder.height();
-
-        let time_base = {
-            let tb = stream.time_base();
-            tb.0 as f64 / tb.1 as f64
-        };
-        let video_duration = {
-            let duration = stream.duration();
-            if duration != ffmpeg::ffi::AV_NOPTS_VALUE {
-                duration as f64 * time_base
-            } else {
-                let format_duration = input_ctx.duration();
-                if format_duration != ffmpeg::ffi::AV_NOPTS_VALUE {
-                    format_duration as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
-                } else {
-                    0.0
-                }
-            }
-        };
-
-        let video_fps = Self::detect_fps(&stream, time_base);
-
-        tracing::info!(
-            event = "video_info",
-            width,
-            height,
-            fps = video_fps,
-            forced_fps,
-            duration = video_duration,
-            time_base,
-            "Video stream initialized"
-        );
-
-        let scaler = if decoder.format() != ffmpeg::format::Pixel::RGBA {
-            Some(
-                ffmpeg::software::scaling::Context::get(
-                    decoder.format(),
-                    width,
-                    height,
-                    ffmpeg::format::Pixel::RGBA,
-                    width,
-                    height,
-                    ffmpeg::software::scaling::flag::Flags::LANCZOS,
-                )
-                .map_err(|e| anyhow!("Failed to create scaler: {}", e))?,
-            )
-        } else {
-            None
-        };
-
-        let mut base = BaseMediaHandler::new_with_shader(shader_path)?;
-        let texture = GlTexture::new(width, height)?;
-        base.dimensions = (width, height);
-        base.texture = Some(texture);
-
-        Ok(Self {
-            base,
-            decoder,
-            scaler,
-            input_ctx,
-            stream_index,
-            video_path: path.to_string(),
-            time_base,
-            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
-            forced_fps,
-            current_frame: None,
-            next_frame: None,
-            current_frame_pts: None,
-            next_frame_pts: None,
-            reached_eof: false,
-            video_fps,
-            video_duration,
-            loop_count: 0,
-            first_pts: None,
-            frame_count: 0,
-        })
-    }
-
-    fn detect_fps(stream: &ffmpeg::format::stream::Stream, time_base: f64) -> f64 {
-        let rate = stream.rate();
-        let avg_rate = stream.avg_frame_rate();
-
-        let fps_from_rate = if rate.1 > 0 {
-            rate.0 as f64 / rate.1 as f64
-        } else {
-            0.0
-        };
-
-        let fps_from_avg = if avg_rate.1 > 0 {
-            avg_rate.0 as f64 / avg_rate.1 as f64
-        } else {
-            0.0
-        };
-
-        let detected_fps = if (1.0..=120.0).contains(&fps_from_rate) {
-            fps_from_rate
-        } else if (1.0..=120.0).contains(&fps_from_avg) {
-            fps_from_avg
-        } else if time_base > 0.0 {
-            let tb_fps = 1.0 / time_base;
-            if (1.0..=120.0).contains(&tb_fps) {
-                tb_fps
-            } else {
-                25.0
-            }
-        } else {
-            25.0
-        };
-
-        tracing::debug!(
-            event = "fps_detection",
-            rate_fps = fps_from_rate,
-            avg_fps = fps_from_avg,
-            time_base_fps = if time_base > 0.0 { 1.0 / time_base } else { 0.0 },
-            detected_fps,
-            "FPS detection results"
-        );
-
-        detected_fps
-    }
-
-    fn update_frame(&mut self) -> Result<bool> {
-        self.base.has_new_frame = false;
-        let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
-        let playback_time = current_time - self.playback_start_time;
-
-        if self.next_frame.is_none() {
-            self.decode_next_frame()?;
-        }
-
-        let should_display_next = if let Some(forced_fps) = self.forced_fps {
-            let frame_duration = 1.0 / forced_fps;
-            let expected_frame_time = self.frame_count as f64 * frame_duration;
-            playback_time >= expected_frame_time
-        } else {
-            if let Some(next_pts) = self.next_frame_pts {
-                let frame_time = self.pts_to_time(next_pts);
-                playback_time >= frame_time
-            } else {
-                let frame_duration = 1.0 / self.video_fps;
-                let expected_frame_time = self.frame_count as f64 * frame_duration;
-                playback_time >= expected_frame_time
-            }
-        };
-
-        if should_display_next && self.next_frame.is_some() {
-            let frame = self.next_frame.take();
-            self.current_frame = frame;
-            self.current_frame_pts = self.next_frame_pts.take();
-
-            if let Some(current_frame) = self.current_frame.take() {
-                self.upload_frame(&current_frame);
-                self.current_frame = Some(current_frame); 
-                self.base.has_new_frame = true;
-                self.frame_count += 1;
-            }
-
-            self.decode_next_frame()?;
-        }
-
-        Ok(self.base.has_new_frame)
-    }
-
-    fn pts_to_time(&self, pts: i64) -> f64 {
-        let adjusted_pts = if let Some(first) = self.first_pts {
-            pts - first
-        } else {
-            pts
-        };
-        adjusted_pts as f64 * self.time_base
-    }
-
-    fn decode_next_frame(&mut self) -> Result<()> {
-        if self.next_frame.is_some() {
-            return Ok(());
-        }
-
-        if !self.decode_frame_to_buffer()? {
-            self.loop_count += 1;
-            tracing::debug!(
-                event = "video_loop",
-                loop_count = self.loop_count,
-                frame_count = self.frame_count,
-                "Video restarted for loop"
-            );
-
-            let expected_loop_duration = if let Some(forced_fps) = self.forced_fps {
-                self.frame_count as f64 / forced_fps
-            } else if self.video_duration > 0.0 {
-                self.video_duration
-            } else {
-                self.frame_count as f64 / self.video_fps
-            };
-
-            let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
-            self.playback_start_time =
-                current_time - (self.loop_count as f64 * expected_loop_duration);
-
-            self.frame_count = 0;
-            self.first_pts = None;
-
-            self.restart_video()?;
-            self.decode_frame_to_buffer()?;
-        }
-        Ok(())
-    }
-
-    fn decode_frame_to_buffer(&mut self) -> Result<bool> {
-        if self.reached_eof {
-            return Ok(false);
-        }
-
-        for (stream, packet) in self.input_ctx.packets() {
-            if stream.index() != self.stream_index {
-                continue;
-            }
-
-            match self.decoder.send_packet(&packet) {
-                Ok(_) => {
-                    let mut decoded = ffmpeg::frame::Video::empty();
-                    while self.decoder.receive_frame(&mut decoded).is_ok() {
-                        let pts = decoded.pts();
-
-                        if let Some(pts_val) = pts {
-                            if self.first_pts.is_none() {
-                                self.first_pts = Some(pts_val);
-                                tracing::debug!(
-                                    event = "video_first_pts",
-                                    pts = pts_val,
-                                    time = self.pts_to_time(pts_val),
-                                    "First frame PTS recorded"
-                                );
-                            }
-                        }
-
-                        let rgba_frame = self.convert_frame(decoded)?;
-                        self.next_frame = Some(rgba_frame);
-                        self.next_frame_pts = pts;
-                        return Ok(true);
-                    }
-                }
-                Err(ffmpeg::Error::Eof) => {
-                    self.reached_eof = true;
-                    return Ok(false);
-                }
-                Err(_) => {
-                    continue;
-                }
-            }
-        }
-
-        self.reached_eof = true;
-        Ok(false)
-    }
-
-    fn convert_frame(&mut self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video> {
-        if frame.format() != ffmpeg::format::Pixel::RGBA {
-            if let Some(ref mut scaler) = self.scaler {
-                let mut rgba_frame = ffmpeg::frame::Video::empty();
-                scaler
-                    .run(&frame, &mut rgba_frame)
-                    .map_err(|e| anyhow!("Scaling failed: {}", e))?;
-                rgba_frame.set_pts(frame.pts());
-                Ok(rgba_frame)
-            } else {
-                Ok(frame)
-            }
-        } else {
-            Ok(frame)
-        }
-    }
-
-    fn upload_frame(&mut self, frame: &ffmpeg::frame::Video) {
-        if let Some(ref texture) = self.base.texture {
-            texture.update_data(frame.data(0));
-        }
-    }
-
-    fn restart_video(&mut self) -> Result<()> {
-        self.current_frame = None;
-        self.next_frame = None;
-        self.current_frame_pts = None;
-        self.next_frame_pts = None;
-        self.reached_eof = false;
-
-        self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
-            .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
-
-        let stream = self
-            .input_ctx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| anyhow!("No video stream on restart"))?;
-
-        self.stream_index = stream.index();
-
-        let context_decoder =
-            ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
-        self.decoder = context_decoder.decoder().video()?;
-
-        Ok(())
-    }
-}
-
-impl MediaHandler for VideoHandler {
-    fn get_texture(&self) -> Option<&GlTexture> {
-        self.base.texture.as_ref()
-    }
-
-    fn get_dimensions(&self) -> (u32, u32) {
-        self.base.dimensions
-    }
-
-    fn update(&mut self) -> Result<bool> {
-        self.update_frame()
-    }
-
-    fn has_new_frame(&self) -> bool {
-        self.base.has_new_frame
-    }
-
-    fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
-        &self.base.shader_program
-    }
-}
-</file>
-
-<file path="src/bin/daemon/wayland/monitors/manager.rs">
-use crate::media::MediaType;
-use crate::wayland::audio::FifoReader;
-use crate::wayland::protocol::events::AppState;
-use crate::wayland::rendering::surface::WaylandSurface;
-use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
-use crate::wayland::types::{OutputInfo, RenderContext};
-use anyhow::Result;
-use khronos_egl as egl;
-use std::collections::HashMap;
-use wayland_client::protocol::wl_compositor;
-use wayland_client::{Connection, QueueHandle};
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
-
-pub struct MonitorManager {
-    surfaces: HashMap<String, WaylandSurface>,
-    egl_instance: egl::Instance<egl::Static>,
-}
-
-impl MonitorManager {
-    pub fn new() -> Self {
-        Self {
-            surfaces: HashMap::new(),
-            egl_instance: egl::Instance::new(egl::Static),
-        }
-    }
-
-    pub fn create_surface(
-        &mut self,
-        output_info: &OutputInfo,
-        compositor: &wl_compositor::WlCompositor,
-        layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
-        layer_name: Option<&str>,
-        media_type: MediaType,
-        conn: &Connection,
-        qh: &QueueHandle<AppState>,
-        fps: u16,
-    ) -> Result<()> {
-        let surface = WaylandSurface::new(
-            output_info,
-            compositor,
-            layer_shell,
-            layer_name,
-            media_type,
-            &self.egl_instance,
-            conn,
-            qh,
-            fps,
-        )?;
-
-        let output_name = surface.get_output_name().to_string();
-        self.surfaces.insert(output_name, surface);
-        Ok(())
-    }
-
-    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut WaylandSurface> {
-        self.surfaces.values_mut()
-    }
-
-    pub fn update_media(
-        &mut self,
-        target_monitors: Option<&[String]>,
-        media_type: MediaType,
-        fps: u16,
-    ) -> Result<()> {
-        match target_monitors {
-            None => {
-                tracing::info!(
-                    event = "media_update_all",
-                    ?media_type,
-                    monitors = self.surfaces.len(),
-                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
-                    "Updating media on all monitors"
-                );
-                for (monitor_name, surface) in &mut self.surfaces {
-                    tracing::debug!(
-                        event = "media_update_monitor",
-                        monitor = %monitor_name,
-                        "Applying media to monitor"
-                    );
-                    surface.renderer.update_media(media_type.clone(), fps)?;
-                }
-            }
-            Some(target_names) => {
-                tracing::info!(
-                    event = "media_update_targeted",
-                    targets = ?target_names,
-                    ?media_type,
-                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
-                    "Updating media on specific monitors"
-                );
-
-                let mut found_monitors = Vec::new();
-                let mut missing_monitors = Vec::new();
-
-                for target_name in target_names {
-                    if let Some(surface) = self.surfaces.get_mut(target_name) {
-                        tracing::debug!(
-                            event = "media_update_monitor",
-                            monitor = %target_name,
-                            "Applying media to target monitor"
-                        );
-                        surface.renderer.update_media(media_type.clone(), fps)?;
-                        found_monitors.push(target_name);
-                    } else {
-                        missing_monitors.push(target_name);
-                    }
-                }
-
-                if !missing_monitors.is_empty() {
-                    tracing::warn!(
-                        event = "monitors_not_found",
-                        missing = ?missing_monitors,
-                        found = ?found_monitors,
-                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
-                        "Some target monitors were not found"
-                    );
-                }
-
-                if found_monitors.is_empty() {
-                    tracing::error!(
-                        event = "no_monitors_updated",
-                        targets = ?target_names,
-                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
-                        "No target monitors were found - no media was updated"
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn set_swap_intervals(&self, has_video: bool, fps: u16) -> Result<()> {
-        for surface in self.surfaces.values() {
-            let interval = match (has_video, fps) {
-                (true, _) => 1,                         // Video content always uses vsync
-                (false, 0) => 0,                        // Unlimited FPS for shaders when fps=0
-                (false, fps_val) if fps_val >= 60 => 1, // Use vsync for high FPS
-                (false, _) => 0,                        // Lower FPS can run unlocked
-            };
-
-            self.egl_instance
-                .swap_interval(surface.egl_resources.display, interval)?;
-
-            tracing::debug!(
-                event = "swap_interval_set",
-                monitor = %surface.output_name,
-                interval,
-                has_video,
-                fps,
-                "Set swap interval for optimal performance"
-            );
-        }
-        Ok(())
-    }
-
-    pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>) -> Result<bool> {
-        let mut any_updated = false;
-
-        let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
-
-        for surface_name in surface_names {
-            if let Some(surface) = self.surfaces.get_mut(&surface_name) {
-                self.egl_instance.make_current(
-                    surface.egl_resources.display,
-                    Some(surface.egl_resources.surface),
-                    Some(surface.egl_resources.surface),
-                    Some(surface.egl_resources.context),
-                )?;
-
-                if surface.renderer.has_new_frame() {
-                    any_updated = true;
-                }
-
-                let mut surface_context = RenderContext {
-                    width: surface.current_width as i32,
-                    height: surface.current_height as i32,
-                    fifo_reader: fifo_reader.as_deref_mut(),
-                };
-
-                surface.renderer.draw(&mut surface_context)?;
-
-                self.egl_instance
-                    .swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
-
-                tracing::trace!(
-                    event = "surface_rendered",
-                    monitor = %surface_name,
-                    width = surface.current_width,
-                    height = surface.current_height,
-                    "Successfully rendered frame"
-                );
-            }
-        }
-
-        Ok(any_updated)
-    }
-
-    pub fn len(&self) -> usize {
-        self.surfaces.len()
-    }
-}
-</file>
-
 <file path=".gitignore">
 /target
 repomix-output.xml
@@ -2878,6 +2310,627 @@ impl MediaHandler for ImageHandler {
 }
 </file>
 
+<file path="src/bin/daemon/media/video.rs">
+use anyhow::{Result, anyhow};
+use ffmpeg_next as ffmpeg;
+use std::path::Path;
+use crate::gl_utils::GlTexture;
+use crate::media::{MediaHandler, BaseMediaHandler};
+
+pub struct VideoHandler {
+    base: BaseMediaHandler,
+    decoder: ffmpeg::decoder::Video,
+    scaler: Option<ffmpeg::software::scaling::Context>,
+    input_ctx: ffmpeg::format::context::Input,
+    stream_index: usize,
+    video_path: String,
+    time_base: f64,
+    playback_start_time: f64,
+    forced_fps: Option<f64>,
+    current_frame: Option<ffmpeg::frame::Video>,
+    next_frame: Option<ffmpeg::frame::Video>,
+    current_frame_pts: Option<i64>,
+    next_frame_pts: Option<i64>,
+    reached_eof: bool,
+    video_fps: f64,
+    video_duration: f64,
+    loop_count: u64,
+    first_pts: Option<i64>,
+    frame_count: u64,
+    video_restarted: bool, 
+}
+
+impl VideoHandler {
+    pub fn new(path: &str, shader_path: Option<&str>, forced_fps: Option<f64>) -> Result<Self> {
+        let fps_msg = if let Some(fps) = forced_fps {
+            format!("forced FPS: {:.1}", fps)
+        } else {
+            "original timing".to_string()
+        };
+        tracing::info!(
+            event = "video_create",
+            path = %path,
+            %fps_msg,
+            shader = shader_path.unwrap_or("default"),
+            "Creating video handler"
+        );
+
+        ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {}", e))?;
+        let input_ctx = ffmpeg::format::input(&Path::new(path))
+            .map_err(|e| anyhow!("Failed to open video file {}: {}", path, e))?;
+
+        let stream = input_ctx
+            .streams()
+            .best(ffmpeg::media::Type::Video)
+            .ok_or_else(|| anyhow!("No video stream found in {}", path))?;
+        let stream_index = stream.index();
+
+        let context_decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+            .map_err(|e| anyhow!("Failed to create codec context: {}", e))?;
+        let decoder = context_decoder
+            .decoder()
+            .video()
+            .map_err(|e| anyhow!("Failed to create video decoder: {}", e))?;
+
+        let width = decoder.width();
+        let height = decoder.height();
+
+        let time_base = {
+            let tb = stream.time_base();
+            tb.0 as f64 / tb.1 as f64
+        };
+        let video_duration = {
+            let duration = stream.duration();
+            if duration != ffmpeg::ffi::AV_NOPTS_VALUE {
+                duration as f64 * time_base
+            } else {
+                let format_duration = input_ctx.duration();
+                if format_duration != ffmpeg::ffi::AV_NOPTS_VALUE {
+                    format_duration as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
+                } else {
+                    0.0
+                }
+            }
+        };
+
+        let video_fps = Self::detect_fps(&stream, time_base);
+
+        tracing::info!(
+            event = "video_info",
+            width,
+            height,
+            fps = video_fps,
+            forced_fps,
+            duration = video_duration,
+            time_base,
+            "Video stream initialized"
+        );
+
+        let scaler = if decoder.format() != ffmpeg::format::Pixel::RGBA {
+            Some(
+                ffmpeg::software::scaling::Context::get(
+                    decoder.format(),
+                    width,
+                    height,
+                    ffmpeg::format::Pixel::RGBA,
+                    width,
+                    height,
+                    ffmpeg::software::scaling::flag::Flags::LANCZOS,
+                )
+                .map_err(|e| anyhow!("Failed to create scaler: {}", e))?,
+            )
+        } else {
+            None
+        };
+
+        let mut base = BaseMediaHandler::new_with_shader(shader_path)?;
+        let texture = GlTexture::new(width, height)?;
+        base.dimensions = (width, height);
+        base.texture = Some(texture);
+
+        Ok(Self {
+            base,
+            decoder,
+            scaler,
+            input_ctx,
+            stream_index,
+            video_path: path.to_string(),
+            time_base,
+            playback_start_time: crate::utils::get_time_millis() as f64 / 1000.0,
+            forced_fps,
+            current_frame: None,
+            next_frame: None,
+            current_frame_pts: None,
+            next_frame_pts: None,
+            reached_eof: false,
+            video_fps,
+            video_duration,
+            loop_count: 0,
+            first_pts: None,
+            frame_count: 0,
+            video_restarted: false, 
+        })
+    }
+
+    pub fn take_restart_flag(&mut self) -> bool {
+        let restarted = self.video_restarted;
+        self.video_restarted = false;
+        restarted
+    }
+
+    fn detect_fps(stream: &ffmpeg::format::stream::Stream, time_base: f64) -> f64 {
+        let rate = stream.rate();
+        let avg_rate = stream.avg_frame_rate();
+
+        let fps_from_rate = if rate.1 > 0 {
+            rate.0 as f64 / rate.1 as f64
+        } else {
+            0.0
+        };
+
+        let fps_from_avg = if avg_rate.1 > 0 {
+            avg_rate.0 as f64 / avg_rate.1 as f64
+        } else {
+            0.0
+        };
+
+        let detected_fps = if (1.0..=120.0).contains(&fps_from_rate) {
+            fps_from_rate
+        } else if (1.0..=120.0).contains(&fps_from_avg) {
+            fps_from_avg
+        } else if time_base > 0.0 {
+            let tb_fps = 1.0 / time_base;
+            if (1.0..=120.0).contains(&tb_fps) {
+                tb_fps
+            } else {
+                25.0
+            }
+        } else {
+            25.0
+        };
+
+        tracing::debug!(
+            event = "fps_detection",
+            rate_fps = fps_from_rate,
+            avg_fps = fps_from_avg,
+            time_base_fps = if time_base > 0.0 { 1.0 / time_base } else { 0.0 },
+            detected_fps,
+            "FPS detection results"
+        );
+
+        detected_fps
+    }
+
+    fn update_frame(&mut self) -> Result<bool> {
+        self.base.has_new_frame = false;
+        let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
+        let playback_time = current_time - self.playback_start_time;
+
+        if self.next_frame.is_none() {
+            self.decode_next_frame()?;
+        }
+
+        let should_display_next = if let Some(forced_fps) = self.forced_fps {
+            let frame_duration = 1.0 / forced_fps;
+            let expected_frame_time = self.frame_count as f64 * frame_duration;
+            playback_time >= expected_frame_time
+        } else {
+            if let Some(next_pts) = self.next_frame_pts {
+                let frame_time = self.pts_to_time(next_pts);
+                playback_time >= frame_time
+            } else {
+                let frame_duration = 1.0 / self.video_fps;
+                let expected_frame_time = self.frame_count as f64 * frame_duration;
+                playback_time >= expected_frame_time
+            }
+        };
+
+        if should_display_next && self.next_frame.is_some() {
+            let frame = self.next_frame.take();
+            self.current_frame = frame;
+            self.current_frame_pts = self.next_frame_pts.take();
+
+            if let Some(current_frame) = self.current_frame.take() {
+                self.upload_frame(&current_frame);
+                self.current_frame = Some(current_frame); 
+                self.base.has_new_frame = true;
+                self.frame_count += 1;
+            }
+
+            self.decode_next_frame()?;
+        }
+
+        Ok(self.base.has_new_frame)
+    }
+
+    fn pts_to_time(&self, pts: i64) -> f64 {
+        let adjusted_pts = if let Some(first) = self.first_pts {
+            pts - first
+        } else {
+            pts
+        };
+        adjusted_pts as f64 * self.time_base
+    }
+
+    fn decode_next_frame(&mut self) -> Result<()> {
+        if self.next_frame.is_some() {
+            return Ok(());
+        }
+
+        if !self.decode_frame_to_buffer()? {
+            self.loop_count += 1;
+            self.video_restarted = true;
+            tracing::debug!(
+                event = "video_loop",
+                loop_count = self.loop_count,
+                frame_count = self.frame_count,
+                "Video restarted for loop"
+            );
+
+            let expected_loop_duration = if let Some(forced_fps) = self.forced_fps {
+                self.frame_count as f64 / forced_fps
+            } else if self.video_duration > 0.0 {
+                self.video_duration
+            } else {
+                self.frame_count as f64 / self.video_fps
+            };
+
+            let current_time = crate::utils::get_time_millis() as f64 / 1000.0;
+            self.playback_start_time =
+                current_time - (self.loop_count as f64 * expected_loop_duration);
+
+            self.frame_count = 0;
+            self.first_pts = None;
+
+            self.restart_video()?;
+            self.decode_frame_to_buffer()?;
+        }
+        Ok(())
+    }
+
+    fn decode_frame_to_buffer(&mut self) -> Result<bool> {
+        if self.reached_eof {
+            return Ok(false);
+        }
+
+        for (stream, packet) in self.input_ctx.packets() {
+            if stream.index() != self.stream_index {
+                continue;
+            }
+
+            match self.decoder.send_packet(&packet) {
+                Ok(_) => {
+                    let mut decoded = ffmpeg::frame::Video::empty();
+                    while self.decoder.receive_frame(&mut decoded).is_ok() {
+                        let pts = decoded.pts();
+
+                        if let Some(pts_val) = pts {
+                            if self.first_pts.is_none() {
+                                self.first_pts = Some(pts_val);
+                                tracing::debug!(
+                                    event = "video_first_pts",
+                                    pts = pts_val,
+                                    time = self.pts_to_time(pts_val),
+                                    "First frame PTS recorded"
+                                );
+                            }
+                        }
+
+                        let rgba_frame = self.convert_frame(decoded)?;
+                        self.next_frame = Some(rgba_frame);
+                        self.next_frame_pts = pts;
+                        return Ok(true);
+                    }
+                }
+                Err(ffmpeg::Error::Eof) => {
+                    self.reached_eof = true;
+                    return Ok(false);
+                }
+                Err(_) => {
+                    continue;
+                }
+            }
+        }
+
+        self.reached_eof = true;
+        Ok(false)
+    }
+
+    fn convert_frame(&mut self, frame: ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video> {
+        if frame.format() != ffmpeg::format::Pixel::RGBA {
+            if let Some(ref mut scaler) = self.scaler {
+                let mut rgba_frame = ffmpeg::frame::Video::empty();
+                scaler
+                    .run(&frame, &mut rgba_frame)
+                    .map_err(|e| anyhow!("Scaling failed: {}", e))?;
+                rgba_frame.set_pts(frame.pts());
+                Ok(rgba_frame)
+            } else {
+                Ok(frame)
+            }
+        } else {
+            Ok(frame)
+        }
+    }
+
+    fn upload_frame(&mut self, frame: &ffmpeg::frame::Video) {
+        if let Some(ref texture) = self.base.texture {
+            texture.update_data(frame.data(0));
+        }
+    }
+
+    fn restart_video(&mut self) -> Result<()> {
+        self.current_frame = None;
+        self.next_frame = None;
+        self.current_frame_pts = None;
+        self.next_frame_pts = None;
+        self.reached_eof = false;
+
+        self.input_ctx = ffmpeg::format::input(&Path::new(&self.video_path))
+            .map_err(|e| anyhow!("Failed to re-open video {}: {}", self.video_path, e))?;
+
+        let stream = self
+            .input_ctx
+            .streams()
+            .best(ffmpeg::media::Type::Video)
+            .ok_or_else(|| anyhow!("No video stream on restart"))?;
+
+        self.stream_index = stream.index();
+
+        let context_decoder =
+            ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        self.decoder = context_decoder.decoder().video()?;
+
+        Ok(())
+    }
+}
+
+impl MediaHandler for VideoHandler {
+    fn get_texture(&self) -> Option<&GlTexture> {
+        self.base.texture.as_ref()
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        self.base.dimensions
+    }
+
+    fn update(&mut self) -> Result<bool> {
+        self.update_frame()
+    }
+
+    fn has_new_frame(&self) -> bool {
+        self.base.has_new_frame
+    }
+
+    fn get_shader_program(&self) -> &crate::gl_utils::GlProgram {
+        &self.base.shader_program
+    }
+}
+</file>
+
+<file path="src/bin/daemon/wayland/monitors/manager.rs">
+use crate::media::MediaType;
+use crate::wayland::audio::{AudioManager, FifoReader};
+use crate::wayland::protocol::events::AppState;
+use crate::wayland::rendering::surface::WaylandSurface;
+use crate::wayland::traits::WaylandSurface as WaylandSurfaceTrait;
+use crate::wayland::types::{OutputInfo, RenderContext};
+use anyhow::Result;
+use khronos_egl as egl;
+use std::collections::HashMap;
+use wayland_client::protocol::wl_compositor;
+use wayland_client::{Connection, QueueHandle};
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
+
+pub struct MonitorManager {
+    surfaces: HashMap<String, WaylandSurface>,
+    egl_instance: egl::Instance<egl::Static>,
+}
+
+impl MonitorManager {
+    pub fn new() -> Self {
+        Self {
+            surfaces: HashMap::new(),
+            egl_instance: egl::Instance::new(egl::Static),
+        }
+    }
+
+    pub fn create_surface(
+        &mut self,
+        output_info: &OutputInfo,
+        compositor: &wl_compositor::WlCompositor,
+        layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
+        layer_name: Option<&str>,
+        media_type: MediaType,
+        conn: &Connection,
+        qh: &QueueHandle<AppState>,
+        fps: u16,
+    ) -> Result<()> {
+        let surface = WaylandSurface::new(
+            output_info,
+            compositor,
+            layer_shell,
+            layer_name,
+            media_type,
+            &self.egl_instance,
+            conn,
+            qh,
+            fps,
+        )?;
+
+        let output_name = surface.get_output_name().to_string();
+        self.surfaces.insert(output_name, surface);
+        Ok(())
+    }
+
+    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut WaylandSurface> {
+        self.surfaces.values_mut()
+    }
+
+    pub fn update_media(
+        &mut self,
+        target_monitors: Option<&[String]>,
+        media_type: MediaType,
+        fps: u16,
+    ) -> Result<()> {
+        match target_monitors {
+            None => {
+                tracing::info!(
+                    event = "media_update_all",
+                    ?media_type,
+                    monitors = self.surfaces.len(),
+                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
+                    "Updating media on all monitors"
+                );
+                for (monitor_name, surface) in &mut self.surfaces {
+                    tracing::debug!(
+                        event = "media_update_monitor",
+                        monitor = %monitor_name,
+                        "Applying media to monitor"
+                    );
+                    surface.renderer.update_media(media_type.clone(), fps)?;
+                }
+            }
+            Some(target_names) => {
+                tracing::info!(
+                    event = "media_update_targeted",
+                    targets = ?target_names,
+                    ?media_type,
+                    available_monitors = ?self.surfaces.keys().collect::<Vec<_>>(),
+                    "Updating media on specific monitors"
+                );
+
+                let mut found_monitors = Vec::new();
+                let mut missing_monitors = Vec::new();
+
+                for target_name in target_names {
+                    if let Some(surface) = self.surfaces.get_mut(target_name) {
+                        tracing::debug!(
+                            event = "media_update_monitor",
+                            monitor = %target_name,
+                            "Applying media to target monitor"
+                        );
+                        surface.renderer.update_media(media_type.clone(), fps)?;
+                        found_monitors.push(target_name);
+                    } else {
+                        missing_monitors.push(target_name);
+                    }
+                }
+
+                if !missing_monitors.is_empty() {
+                    tracing::warn!(
+                        event = "monitors_not_found",
+                        missing = ?missing_monitors,
+                        found = ?found_monitors,
+                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
+                        "Some target monitors were not found"
+                    );
+                }
+
+                if found_monitors.is_empty() {
+                    tracing::error!(
+                        event = "no_monitors_updated",
+                        targets = ?target_names,
+                        available = ?self.surfaces.keys().collect::<Vec<_>>(),
+                        "No target monitors were found - no media was updated"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_swap_intervals(&self, has_video: bool, fps: u16) -> Result<()> {
+        for surface in self.surfaces.values() {
+            let interval = match (has_video, fps) {
+                (true, _) => 1,                         // Video content always uses vsync
+                (false, 0) => 0,                        // Unlimited FPS for shaders when fps=0
+                (false, fps_val) if fps_val >= 60 => 1, // Use vsync for high FPS
+                (false, _) => 0,                        // Lower FPS can run unlocked
+            };
+
+            self.egl_instance
+                .swap_interval(surface.egl_resources.display, interval)?;
+
+            tracing::debug!(
+                event = "swap_interval_set",
+                monitor = %surface.output_name,
+                interval,
+                has_video,
+                fps,
+                "Set swap interval for optimal performance"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn render_all(&mut self, mut fifo_reader: Option<&mut FifoReader>, audio_manager: &mut AudioManager) -> Result<bool> {
+        let mut any_updated = false;
+        let mut video_restarted = false;
+
+        let surface_names: Vec<String> = self.surfaces.keys().cloned().collect();
+
+        for surface_name in surface_names {
+            if let Some(surface) = self.surfaces.get_mut(&surface_name) {
+                self.egl_instance.make_current(
+                    surface.egl_resources.display,
+                    Some(surface.egl_resources.surface),
+                    Some(surface.egl_resources.surface),
+                    Some(surface.egl_resources.context),
+                )?;
+
+                if surface.renderer.has_new_frame() {
+                    any_updated = true;
+                }
+
+                // Check for video restart
+                if surface.renderer.check_video_restart() {
+                    video_restarted = true;
+                }
+
+                let mut surface_context = RenderContext {
+                    width: surface.current_width as i32,
+                    height: surface.current_height as i32,
+                    fifo_reader: fifo_reader.as_deref_mut(),
+                };
+
+                surface.renderer.draw(&mut surface_context)?;
+
+                self.egl_instance
+                    .swap_buffers(surface.egl_resources.display, surface.egl_resources.surface)?;
+
+                tracing::trace!(
+                    event = "surface_rendered",
+                    monitor = %surface_name,
+                    width = surface.current_width,
+                    height = surface.current_height,
+                    "Successfully rendered frame"
+                );
+            }
+        }
+
+        if video_restarted {
+            audio_manager.handle_video_restart()?;
+        }
+
+        Ok(any_updated)
+    }
+
+    pub fn len(&self) -> usize {
+        self.surfaces.len()
+    }
+}
+</file>
+
+<file path="src/ui/mod.rs">
+pub mod components;
+pub mod ipc;
+pub mod loader;
+pub mod pages;
+pub mod state;
+pub mod view;
+</file>
+
 <file path="src/bin/daemon/wayland/rendering/renderer.rs">
 use crate::gl_bindings as gl;
 use crate::media::{ImageHandler, MediaHandler, MediaType, ShaderHandler, VideoHandler};
@@ -2906,6 +2959,14 @@ impl MediaObject {
             MediaObject::Shader(h) => h,
             MediaObject::Image(h) => h,
             MediaObject::Video(h) => h,
+        }
+    }
+
+    // Add method to get video handler specifically
+    fn as_video_handler_mut(&mut self) -> Option<&mut VideoHandler> {
+        match self {
+            MediaObject::Video(h) => Some(h),
+            _ => None,
         }
     }
 }
@@ -3004,6 +3065,16 @@ impl MediaRenderer {
         } else {
             false
         }
+    }
+
+    // Add method to check for video restarts
+    pub fn check_video_restart(&mut self) -> bool {
+        if let Some(ref mut media) = self.current_media {
+            if let Some(video_handler) = media.as_video_handler_mut() {
+                return video_handler.take_restart_flag();
+            }
+        }
+        false
     }
 
     pub fn update_media(&mut self, new_media_type: MediaType, fps: u16) -> Result<()> {
@@ -3320,15 +3391,6 @@ impl Drop for MediaRenderer {
         }
     }
 }
-</file>
-
-<file path="src/ui/mod.rs">
-pub mod components;
-pub mod ipc;
-pub mod loader;
-pub mod pages;
-pub mod state;
-pub mod view;
 </file>
 
 <file path="src/bin/daemon/utils.rs">
@@ -4059,7 +4121,7 @@ pub fn init(
 
         let any_video_updated = wayland_manager
             .monitor_manager
-            .render_all(fifo_reader.as_mut())?;
+            .render_all(fifo_reader.as_mut(), &mut audio_manager)?;
 
         frame_count += 1;
 
